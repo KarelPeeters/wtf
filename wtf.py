@@ -312,6 +312,8 @@ class ProcessTreeScene(QGraphicsScene):
 
 
 class ProcessTreeView(QGraphicsView):
+    signal_processes_updated = QtCore.pyqtSignal()
+
     def __init__(self, processes: Processes):
         super().__init__()
 
@@ -326,8 +328,6 @@ class ProcessTreeView(QGraphicsView):
 
         self.processes = processes
         self.rebuild_scene()
-
-    signal_processes_updated = QtCore.pyqtSignal()
 
     @QtCore.pyqtSlot()
     def slot_processes_updated(self):

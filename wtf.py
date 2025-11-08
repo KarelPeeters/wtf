@@ -1,6 +1,7 @@
 import argparse
 import math
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from threading import Thread
@@ -42,10 +43,40 @@ class ProcessInfo:
     # TODO is pid unique enough?
     # TODO args
     pid: int
-    command: str
+    command_path: str
+    command_argv: List[str]
     time_start: float
     time_end: Optional[float]
     children: List["ProcessInfo"]
+
+
+PATTERN_STR = r"\"(?:\\x[0-9a-f]+)*\""
+PATTERN_EXEC = rf"execve(?:at)?\((?P<path>{PATTERN_STR}), (?P<argv>\[(?:{PATTERN_STR}(?:, )?)*]), .*\) = \d+"
+REGEX_EXEC = re.compile(PATTERN_EXEC)
+
+PATTERN_HEX = r"\\x([0-9a-f]+)"
+REGEX_HEX = re.compile(PATTERN_HEX)
+
+
+def unescape_hex(s: str) -> str:
+    def f(m):
+        return chr(int(m.group(1), 16))
+
+    return re.subn(REGEX_HEX, f, s)[0]
+
+
+def parse_hex_str(s: str) -> str:
+    assert len(s) >= 2 and s[0] == "\"" and s[-1] == "\""
+    s = s[1:-1]
+    return unescape_hex(s)
+
+
+def parse_hex_str_list(s: str) -> List[str]:
+    assert len(s) >= 2 and s[0] == "[" and s[-1] == "]"
+    s = s[1:-1]
+    if not s:
+        return []
+    return [parse_hex_str(p.strip()) for p in (s.split(","))]
 
 
 def handle_strace_line(processes: Processes, s: str):
@@ -78,8 +109,14 @@ def handle_strace_line(processes: Processes, s: str):
 
     # first syscall in new process
     elif rest.startswith("execve(") or rest.startswith("execat("):
-        # TODO only keep the command itself
-        info = ProcessInfo(pid=pid, command=rest, time_start=time, time_end=None, children=[])
+        m = REGEX_EXEC.fullmatch(rest)
+        command_path = parse_hex_str(m.group("path"))
+        command_argv = parse_hex_str_list(m.group("argv"))
+
+        info = ProcessInfo(
+            pid=pid, command_path=command_path, command_argv=command_argv, time_start=time,
+            time_end=None, children=[]
+        )
         processes.processes[pid] = info
         processes.report_time(time)
 
@@ -118,6 +155,8 @@ def run_strace(command: List[str], callback: Callable[[str], None]) -> int:
     strace_command = [
         "strace",
         "--follow-forks",
+        f"--string-limit={2 ** 20}",
+        "--strings-in-hex",
         "-e",
         "trace=process",
         "--always-show-pid",
@@ -254,8 +293,8 @@ class ProcessTreeScene(QGraphicsScene):
             brush = QBrush(QColor(255, 255, 255 - min(255, int(depth / 8 * 255))))
             self.addRect(rect, pen, brush)
 
-            # txt = self.addSimpleText(p.info.command)
-            # txt.setPos(rect.topLeft())
+            txt = self.addSimpleText(p.info.command_path)
+            txt.setPos(rect.topLeft())
 
             for c in p.children:
                 f(p=c, base=start + 1, depth=depth + 1)

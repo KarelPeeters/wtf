@@ -6,8 +6,8 @@ import sys
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Callable, Tuple
 
-from PyQt5.QtCore import QRectF, Qt
-from PyQt5.QtGui import QPen, QColor, QBrush
+from PyQt5.QtCore import QRectF, Qt, QPointF
+from PyQt5.QtGui import QPen, QColor, QBrush, QWheelEvent
 from PyQt5.QtWidgets import QApplication, QGraphicsScene, QGraphicsView
 
 
@@ -220,20 +220,21 @@ def place_process(parent: ProcessInfo) -> PlacedProcess:
 
 
 class ProcessTreeScene(QGraphicsScene):
-    def __init__(self, processes: Processes, scale_horizontal: float):
+    def __init__(self, processes: Processes, scale_horizontal: float, scale_vertical: float):
         super().__init__()
 
         # TODO add command name
         # TODO color based on command?
         # TODO get height/width of text
-        H = 20
+        H = 20 * scale_vertical
         WF = 200 * scale_horizontal
 
         def f(p: PlacedProcess, base: int, depth: int):
             start = base + p.offset
 
+            # subtract start time from all positions to avoid 32-bit overflow, which causes issues in the scrollbars
             rect = QRectF(
-                WF * p.info.time_start,
+                WF * (p.info.time_start - processes.time_start_min),
                 H * start,
                 WF * (p.info.time_end - p.info.time_start),
                 H * p.height
@@ -261,12 +262,18 @@ class ProcessTreeView(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
 
         self.scale_horizontal_linear = 0
+        self.scale_vertical_linear = 0
+
         self.processes = processes
         self.rebuild_scene()
 
     def rebuild_scene(self):
         # TODO benchmark if this is slow
-        scene = ProcessTreeScene(processes=self.processes, scale_horizontal=math.exp(self.scale_horizontal_linear))
+        scene = ProcessTreeScene(
+            processes=self.processes,
+            scale_horizontal=math.exp(self.scale_horizontal_linear),
+            scale_vertical=math.exp(self.scale_vertical_linear),
+        )
         self.setScene(scene)
 
     def enterEvent(self, event):
@@ -280,9 +287,41 @@ class ProcessTreeView(QGraphicsView):
         self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
 
     def wheelEvent(self, event):
-        self.scale_horizontal_linear += event.angleDelta().y() / 360
-        self.rebuild_scene()
-        super().wheelEvent(event)
+        delta = QPointF(event.angleDelta()) / 360
+
+        if event.modifiers() & Qt.ControlModifier:
+            # horizontal zoom
+            self.scale_horizontal_linear += delta.y()
+            self.scale_vertical_linear += delta.x()
+            self.rebuild_scene()
+
+        elif event.modifiers() & Qt.AltModifier:
+            # vertical zoom
+            self.scale_vertical_linear += delta.y()
+            self.scale_horizontal_linear += delta.x()
+            self.rebuild_scene()
+
+        elif event.modifiers() & Qt.ShiftModifier:
+            # horizontal scroll
+            # we need to edit the wheel event to remove the shift modifier, otherwise the scrollbar interprets it as
+            #   "scroll an entire page"
+            event_edited = QWheelEvent(
+                event.pos(),
+                event.globalPos(),
+                event.pixelDelta(),
+                event.angleDelta(),
+                event.buttons(),
+                event.modifiers() & ~Qt.ShiftModifier,
+                event.phase(),
+                event.inverted(),
+                event.source(),
+            )
+            QApplication.sendEvent(self.horizontalScrollBar(), event_edited)
+        else:
+            # vertical scroll
+            QApplication.sendEvent(self.verticalScrollBar(), event)
+
+        event.accept()
 
 
 def main():

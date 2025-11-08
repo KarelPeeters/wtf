@@ -8,7 +8,7 @@ from typing import List, Dict, Optional, Callable, Tuple
 
 from PyQt5.QtCore import QRectF, Qt
 from PyQt5.QtGui import QPen, QColor, QBrush
-from PyQt5.QtWidgets import QApplication, QGraphicsScene, QGraphicsView, QGraphicsItem
+from PyQt5.QtWidgets import QApplication, QGraphicsScene, QGraphicsView
 
 
 class Processes:
@@ -220,13 +220,14 @@ def place_process(parent: ProcessInfo) -> PlacedProcess:
 
 
 class ProcessTreeScene(QGraphicsScene):
-    def __init__(self, processes: Processes):
+    def __init__(self, processes: Processes, scale_horizontal: float):
         super().__init__()
 
         # TODO add command name
         # TODO color based on command?
+        # TODO get height/width of text
         H = 20
-        WF = 200
+        WF = 200 * scale_horizontal
 
         def f(p: PlacedProcess, base: int, depth: int):
             start = base + p.offset
@@ -238,13 +239,11 @@ class ProcessTreeScene(QGraphicsScene):
                 H * p.height
             )
             pen = QPen(QColor(0, 0, 0))
-            pen.setCosmetic(True)
             brush = QBrush(QColor(255, 255, 255 - min(255, int(depth / 8 * 255))))
             self.addRect(rect, pen, brush)
 
             txt = self.addSimpleText(p.info.command)
             txt.setPos(rect.topLeft())
-            txt.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
 
             for c in p.children:
                 f(p=c, base=start + 1, depth=depth + 1)
@@ -255,10 +254,20 @@ class ProcessTreeScene(QGraphicsScene):
 
 class ProcessTreeView(QGraphicsView):
     def __init__(self, processes: Processes):
-        scene = ProcessTreeScene(processes)
-        super().__init__(scene)
+        super().__init__()
 
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+
+        self.scale_horizontal_linear = 0
+        self.processes = processes
+        self.rebuild_scene()
+
+    def rebuild_scene(self):
+        # TODO benchmark if this is slow
+        scene = ProcessTreeScene(processes=self.processes, scale_horizontal=math.exp(self.scale_horizontal_linear))
+        self.setScene(scene)
 
     def enterEvent(self, event):
         # stop annoying default cursor change
@@ -271,7 +280,9 @@ class ProcessTreeView(QGraphicsView):
         self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
 
     def wheelEvent(self, event):
-        self.scale(math.exp(event.angleDelta().y() / 360), 1)
+        self.scale_horizontal_linear += event.angleDelta().y() / 360
+        self.rebuild_scene()
+        super().wheelEvent(event)
 
 
 def main():

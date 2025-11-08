@@ -62,6 +62,21 @@ def handle_strace_line(processes: Dict[int, ProcessInfo], s: str):
         print("Warning: unhandled strace line:", rest)
 
 
+def print_processes(processes: Dict[int, ProcessInfo]):
+    seen = set()
+
+    def f(curr_pid: int, curr_indent: int):
+        seen.add(curr_pid)
+        print("  " * curr_indent + str(processes[curr_pid]))
+        for c in processes[curr_pid].children:
+            f(c, curr_indent + 1)
+
+    for p in processes:
+        if p in seen:
+            continue
+        f(p, 0)
+
+
 def run(command: List[str]) -> int:
     # start strace command
     # TODO create large buffer to avoid latency?
@@ -87,8 +102,7 @@ def run(command: List[str]) -> int:
             print(line, end='', file=log_file)
             handle_strace_line(processes, line)
 
-    for p in processes.values():
-        print(p)
+    print_processes(processes)
 
     # the rx pipe has been closed because strace has exited,
     #   now just get the final exit code

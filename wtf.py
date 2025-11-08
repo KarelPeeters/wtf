@@ -2,10 +2,11 @@ import argparse
 import math
 import os
 import subprocess
-import sys
 from dataclasses import dataclass
+from threading import Thread
 from typing import List, Dict, Optional, Callable, Tuple
 
+from PyQt5 import QtCore
 from PyQt5.QtCore import QRectF, Qt, QPointF
 from PyQt5.QtGui import QPen, QColor, QBrush, QWheelEvent
 from PyQt5.QtWidgets import QApplication, QGraphicsScene, QGraphicsView
@@ -14,8 +15,8 @@ from PyQt5.QtWidgets import QApplication, QGraphicsScene, QGraphicsView
 class Processes:
     # final results
     root: Optional["ProcessInfo"]
-    time_start_min: float
-    time_end_max: float
+    time_min: float
+    time_max: float
 
     # intermediate mappings
     processes: Dict[int, "ProcessInfo"]
@@ -24,12 +25,16 @@ class Processes:
 
     def __init__(self):
         self.root = None
-        self.time_start_min = math.inf
-        self.time_end_max = -math.inf
+        self.time_min = math.inf
+        self.time_max = -math.inf
 
         self.processes = {}
         self.parents = {}
         self.unfinished = {}
+
+    def report_time(self, time: float):
+        self.time_min = min(self.time_min, time)
+        self.time_max = max(self.time_max, time)
 
 
 @dataclass
@@ -76,7 +81,7 @@ def handle_strace_line(processes: Processes, s: str):
         # TODO only keep the command itself
         info = ProcessInfo(pid=pid, command=rest, time_start=time, time_end=None, children=[])
         processes.processes[pid] = info
-        processes.time_start_min = min(processes.time_start_min, time)
+        processes.report_time(time)
 
         if processes.root is None:
             processes.root = info
@@ -87,7 +92,7 @@ def handle_strace_line(processes: Processes, s: str):
     # process ending
     elif rest.startswith("exit(") or rest.startswith("exit_group("):
         processes.processes[pid].time_end = time
-        processes.time_end_max = max(processes.time_end_max, time)
+        processes.report_time(time)
 
     # ignored
     elif any(rest.startswith(x) for x in ("wait3(", "wait4(", "+++", "<...", "---")):
@@ -184,12 +189,17 @@ class FreeList:
             self.free_mask[i] = True
 
 
-def place_process(parent: ProcessInfo) -> PlacedProcess:
+def place_process(processes: Processes, parent: ProcessInfo) -> PlacedProcess:
     # collect all relevant time points and map them to the processes that start/end at that time
     time_to_procs: Dict[float, Tuple[List[ProcessInfo], List[ProcessInfo]]] = {}
     for c in parent.children:
+        c_time_end = c.time_end if c.time_end is not None else processes.time_max
+        assert c_time_end >= c.time_start
+        if c.time_start == c_time_end:
+            continue
+
         time_to_procs.setdefault(c.time_start, ([], []))[0].append(c)
-        time_to_procs.setdefault(c.time_end, ([], []))[1].append(c)
+        time_to_procs.setdefault(c_time_end, ([], []))[1].append(c)
     times_sorted = sorted(time_to_procs.keys())
 
     # simulate time left to right
@@ -208,7 +218,7 @@ def place_process(parent: ProcessInfo) -> PlacedProcess:
 
         # handle process starts
         for proc in procs_start:
-            proc_placed = place_process(proc)
+            proc_placed = place_process(processes, proc)
 
             assert proc_placed.offset == 0
             proc_placed.offset = free.allocate(proc_placed.height)
@@ -233,24 +243,26 @@ class ProcessTreeScene(QGraphicsScene):
             start = base + p.offset
 
             # subtract start time from all positions to avoid 32-bit overflow, which causes issues in the scrollbars
+            p_time_end = p.info.time_end if p.info.time_end is not None else processes.time_max
             rect = QRectF(
-                WF * (p.info.time_start - processes.time_start_min),
+                WF * (p.info.time_start - processes.time_min),
                 H * start,
-                WF * (p.info.time_end - p.info.time_start),
+                WF * (p_time_end - p.info.time_start),
                 H * p.height
             )
             pen = QPen(QColor(0, 0, 0))
             brush = QBrush(QColor(255, 255, 255 - min(255, int(depth / 8 * 255))))
             self.addRect(rect, pen, brush)
 
-            txt = self.addSimpleText(p.info.command)
-            txt.setPos(rect.topLeft())
+            # txt = self.addSimpleText(p.info.command)
+            # txt.setPos(rect.topLeft())
 
             for c in p.children:
                 f(p=c, base=start + 1, depth=depth + 1)
 
-        placed = place_process(processes.root)
-        f(placed, base=0, depth=0)
+        if processes.root is not None:
+            placed = place_process(processes, processes.root)
+            f(placed, base=0, depth=0)
 
 
 class ProcessTreeView(QGraphicsView):
@@ -264,7 +276,15 @@ class ProcessTreeView(QGraphicsView):
         self.scale_horizontal_linear = 0
         self.scale_vertical_linear = 0
 
+        self.signal_processes_updated.connect(self.slot_processes_updated)
+
         self.processes = processes
+        self.rebuild_scene()
+
+    signal_processes_updated = QtCore.pyqtSignal()
+
+    @QtCore.pyqtSlot()
+    def slot_processes_updated(self):
         self.rebuild_scene()
 
     def rebuild_scene(self):
@@ -332,6 +352,7 @@ class ProcessTreeView(QGraphicsView):
 
 
 def main():
+    # parse args
     parser = argparse.ArgumentParser(prog="wtf")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
@@ -339,27 +360,27 @@ def main():
     command: List[str] = args.command
     if command and command[0] == "--":
         command = command[1:]
-
     if not command:
         parser.error("Missing command")
 
-    processes = Processes()
-    exit_code = run_strace(command, lambda s: handle_strace_line(processes, s))
-    assert processes.root is not None
-    print_processes(processes.root)
-
-    # TODO start GUI thread
+    # create GUI
     app = QApplication([])
-    # w = MainWindow(processes)
-    # w.show()
-
-    # view = QGraphicsView(scene)
+    processes = Processes()
     view = ProcessTreeView(processes)
+
+    # start trace on secondary thread
+    def strace_callback(s: str):
+        handle_strace_line(processes, s)
+        view.signal_processes_updated.emit()
+
+    def thread_main():
+        run_strace(command, strace_callback)
+
+    strace_thread = Thread(target=thread_main)
+    strace_thread.start()
+
     view.show()
-
     app.exec_()
-
-    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

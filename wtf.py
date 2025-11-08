@@ -19,6 +19,7 @@ class Processes:
     # intermediate mappings
     processes: Dict[int, "ProcessInfo"]
     parents: Dict[int, int]
+    unfinished: Dict[int, str]
 
     def __init__(self):
         self.root = None
@@ -27,6 +28,7 @@ class Processes:
 
         self.processes = {}
         self.parents = {}
+        self.unfinished = {}
 
 
 @dataclass
@@ -46,6 +48,21 @@ def handle_strace_line(processes: Processes, s: str):
     pid = int(pid_str)
     time = float(time_str)
     rest = rest.rstrip()
+
+    # re-join unfinished/resumed syscalls
+    UNFINISHED_SUFFIX = " <unfinished ...>"
+    RESUMED_PREFIX_START = "<... "
+    RESUMED_PREFIX_END = " resumed>"
+
+    if rest.endswith(UNFINISHED_SUFFIX):
+        assert pid not in processes.unfinished
+        processes.unfinished[pid] = rest[:-len(UNFINISHED_SUFFIX)]
+        return
+
+    if rest.startswith(RESUMED_PREFIX_START):
+        pos = rest.index(RESUMED_PREFIX_END)
+        prev = processes.unfinished.pop(pid)
+        rest = prev + rest[pos + len(RESUMED_PREFIX_END):]
 
     # parent spawning child process
     if rest.startswith("clone(") or rest.startswith("fork(") or rest.startswith("vfork("):

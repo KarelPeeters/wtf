@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Callable
 
-from PyQt5.QtCore import QRectF, Qt, QPoint
+from PyQt5.QtCore import QRectF
 from PyQt5.QtWidgets import QApplication, QGraphicsScene, QGraphicsView
 
 
@@ -122,49 +122,34 @@ class ProcessTreeView(QGraphicsView):
         scene = ProcessTreeScene(processes)
         super().__init__(scene)
 
-        self.prev_mouse_hold_pos: Optional[QPoint] = None
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.prev_mouse_hold_pos = event.pos()
-        else:
-            self.prev_mouse_hold_pos = None
-
-        super().mousePressEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        self.prev_mouse_hold_pos = None
-
-        super().mouseReleaseEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self.prev_mouse_hold_pos is not None:
-            delta = self.mapToScene(event.pos()) - self.mapToScene(self.prev_mouse_hold_pos)
-            print(event.pos(), self.prev_mouse_hold_pos, delta)
-            self.translate(delta.x(), delta.y())
-            self.prev_mouse_hold_pos = event.pos()
-
-        super().mouseMoveEvent(event)
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
 
 
 class ProcessTreeScene(QGraphicsScene):
     def __init__(self, processes: Processes):
         super().__init__()
 
-        y = 0
         H = 20
-        W = 100
+        WF = 200
 
-        def f(info: ProcessInfo):
-            nonlocal y
-            r = QRectF(W * info.time_start, y, W * (info.time_end - info.time_start), H)
+        def f(info: ProcessInfo, start_y: float) -> int:
+            # TODO make rect actually contain the children?
+            # TODO color by command
+            r = QRectF(
+                WF * info.time_start,
+                start_y,
+                WF * (info.time_end - info.time_start),
+                H
+            )
             self.addRect(r)
-            y += H
 
+            # TODO properly "schedule" children, don't just stack them
+            curr_steps = 1
             for c in info.children:
-                f(c)
+                curr_steps += f(c, start_y=start_y + curr_steps * H)
+            return curr_steps
 
-        f(processes.root)
+        f(processes.root, start_y=0)
 
 
 def main():
@@ -189,7 +174,6 @@ def main():
     # w = MainWindow(processes)
     # w.show()
 
-    scene = ProcessTreeScene(processes)
     # view = QGraphicsView(scene)
     view = ProcessTreeView(processes)
     view.show()

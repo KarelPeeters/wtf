@@ -5,6 +5,7 @@ import math
 import os
 import re
 import subprocess
+import time
 from dataclasses import dataclass
 from threading import Thread
 from typing import List, Dict, Optional, Callable, Tuple
@@ -32,7 +33,6 @@ class Processes:
         self.time_max = -math.inf
 
         self.processes = {}
-        self.parents = {}
         self.unfinished = {}
 
     def report_time(self, time: float):
@@ -41,19 +41,27 @@ class Processes:
 
 
 @dataclass
+class ProcessCommand:
+    time: float
+    path: str
+    argv: List[str]
+
+
+@dataclass
 class ProcessInfo:
     # TODO is pid unique enough?
-    # TODO args
     pid: int
-    command_path: str
-    command_argv: List[str]
+    parent_pid: Optional[int]
+
     time_start: float
     time_end: Optional[float]
+
+    commands: List[ProcessCommand]
     children: List["ProcessInfo"]
 
 
 PATTERN_STR = r"\"(?:\\x[0-9a-f]+)*\""
-PATTERN_EXEC = rf"execve(?:at)?\((?P<path>{PATTERN_STR}), (?P<argv>\[(?:{PATTERN_STR}(?:, )?)*]), .*\) = \d+"
+PATTERN_EXEC = rf"execve(?:at)?\((?P<path>{PATTERN_STR}), (?P<argv>\[(?:{PATTERN_STR}(?:, )?)*]), .*\) = .+"
 REGEX_EXEC = re.compile(PATTERN_EXEC)
 
 PATTERN_HEX = r"\\x([0-9a-f]+)"
@@ -82,11 +90,15 @@ def parse_hex_str_list(s: str) -> List[str]:
 
 
 def handle_strace_line(processes: Processes, s: str):
+    print("Handling strace line")
+
     # split input
     pid_str, time_str, rest = s.split(" ", 2)
     pid = int(pid_str)
     time = float(time_str)
     rest = rest.rstrip()
+
+    processes.report_time(time)
 
     # re-join unfinished/resumed syscalls
     UNFINISHED_SUFFIX = " <unfinished ...>"
@@ -104,37 +116,44 @@ def handle_strace_line(processes: Processes, s: str):
         rest = prev + rest[pos + len(RESUMED_PREFIX_END):]
 
     # parent spawning child process
-    if rest.startswith("clone(") or rest.startswith("fork(") or rest.startswith("vfork("):
+    if rest.startswith("clone(") or rest.startswith("clone3(") or rest.startswith("fork(") or rest.startswith("vfork("):
         _, child_pid_str = rest.rsplit("=", 1)
         child_pid = int(child_pid_str.strip())
-        processes.parents[child_pid] = pid
 
-    # first syscall in new process
+        info = ProcessInfo(pid=child_pid, parent_pid=pid, time_start=time, time_end=None, commands=[], children=[])
+        processes.processes[child_pid] = info
+        processes.processes[pid].children.append(info)
+
+    # process starting a binary
     elif rest.startswith("execve(") or rest.startswith("execat("):
         m = REGEX_EXEC.fullmatch(rest)
-        command_path = parse_hex_str(m.group("path"))
-        command_argv = parse_hex_str_list(m.group("argv"))
-
-        info = ProcessInfo(
-            pid=pid, command_path=command_path, command_argv=command_argv, time_start=time,
-            time_end=None, children=[]
+        if not m:
+            print("fail")
+        cmd = ProcessCommand(
+            time=time,
+            path=parse_hex_str(m.group("path")),
+            argv=parse_hex_str_list(m.group("argv"))
         )
-        processes.processes[pid] = info
-        processes.report_time(time)
 
-        if processes.root is None:
-            processes.root = info
+        print(f"pid {pid} execve {cmd}")
+
+        if pid in processes.processes:
+            # exec of existing process
+            info = processes.processes[pid]
         else:
-            parent_pid = processes.parents[pid]
-            processes.processes[parent_pid].children.append(info)
+            # initial exec for root process
+            assert processes.root is None
+            info = ProcessInfo(pid=pid, parent_pid=None, time_start=time, time_end=None, commands=[cmd], children=[])
+            processes.processes[pid] = info
+            processes.root = info
 
-    # process ending
+        info.commands.append(cmd)
+
     elif rest.startswith("exit(") or rest.startswith("exit_group("):
         processes.processes[pid].time_end = time
-        processes.report_time(time)
 
     # ignored
-    elif any(rest.startswith(x) for x in ("wait3(", "wait4(", "+++", "<...", "---")):
+    elif any(rest.startswith(x) for x in ("wait3(", "wait4(", "tgkill(", "+++", "<...", "---")):
         pass
     else:
         print("Warning: unhandled strace line:", rest)
@@ -300,9 +319,12 @@ class ProcessTreeScene(QGraphicsScene):
             brush = QBrush(QColor(255, 255, 255 - min(255, int(depth / 8 * 255))))
             self.addRect(rect, pen, brush)
 
-            txt_str = p.info.command_path
+            txt_str = "?"
+            if p.info.commands:
+                txt_str = p.info.commands[-1].path
+
             if H >= font_height and p_width >= metrics.width(txt_str):
-                txt = self.addSimpleText(p.info.command_path)
+                txt = self.addSimpleText(txt_str)
                 txt.setPos(rect.topLeft())
 
             for c in p.children:
@@ -337,11 +359,13 @@ class ProcessTreeView(QGraphicsView):
 
     def rebuild_scene(self):
         # TODO benchmark if this is slow
+        perf_start = time.perf_counter()
         scene = ProcessTreeScene(
             processes=self.processes,
             scale_horizontal=math.exp(self.scale_horizontal_linear),
             scale_vertical=math.exp(self.scale_vertical_linear),
         )
+        print(f"Scene building took {time.perf_counter() - perf_start}s")
         self.setScene(scene)
 
     def enterEvent(self, event):
@@ -429,6 +453,8 @@ def main():
 
     view.show()
     app.exec_()
+
+    strace_thread.join()
 
 
 if __name__ == "__main__":

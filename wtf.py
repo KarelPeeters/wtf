@@ -73,6 +73,7 @@ def handle_strace_line(processes: Processes, s: str):
 
     # first syscall in new process
     elif rest.startswith("execve(") or rest.startswith("execat("):
+        # TODO only keep the command itself
         info = ProcessInfo(pid=pid, command=rest, time_start=time, time_end=None, children=[])
         processes.processes[pid] = info
         processes.time_start_min = min(processes.time_start_min, time)
@@ -133,27 +134,6 @@ def run_strace(command: List[str], callback: Callable[[str], None]) -> int:
     # the rx pipe has been closed because strace has exited,
     #   now just get the final exit code
     return strace_process.wait()
-
-
-class ProcessTreeView(QGraphicsView):
-    def __init__(self, processes: Processes):
-        scene = ProcessTreeScene(processes)
-        super().__init__(scene)
-
-        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
-
-    def enterEvent(self, event):
-        # stop annoying default cursor change
-        super().enterEvent(event)
-        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
-
-    def mouseReleaseEvent(self, event):
-        # stop annoying default cursor change
-        super().mouseReleaseEvent(event)
-        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
-
-    def wheelEvent(self, event):
-        self.scale(math.exp(event.angleDelta().y() / 360), 1)
 
 
 @dataclass
@@ -260,14 +240,38 @@ class ProcessTreeScene(QGraphicsScene):
             pen = QPen(QColor(0, 0, 0))
             pen.setCosmetic(True)
             brush = QBrush(QColor(255, 255, 255 - min(255, int(depth / 8 * 255))))
-
             self.addRect(rect, pen, brush)
+
+            txt = self.addSimpleText(p.info.command)
+            txt.setPos(rect.topLeft())
+            txt.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations)
 
             for c in p.children:
                 f(p=c, base=start + 1, depth=depth + 1)
 
         placed = place_process(processes.root)
         f(placed, base=0, depth=0)
+
+
+class ProcessTreeView(QGraphicsView):
+    def __init__(self, processes: Processes):
+        scene = ProcessTreeScene(processes)
+        super().__init__(scene)
+
+        self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+
+    def enterEvent(self, event):
+        # stop annoying default cursor change
+        super().enterEvent(event)
+        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+
+    def mouseReleaseEvent(self, event):
+        # stop annoying default cursor change
+        super().mouseReleaseEvent(event)
+        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+
+    def wheelEvent(self, event):
+        self.scale(math.exp(event.angleDelta().y() / 360), 1)
 
 
 def main():

@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Callable, Tuple
 
-from PyQt5.QtCore import QRectF
+from PyQt5.QtCore import QRectF, Qt
 from PyQt5.QtGui import QPen, QColor, QBrush
 from PyQt5.QtWidgets import QApplication, QGraphicsScene, QGraphicsView
 
@@ -141,6 +141,16 @@ class ProcessTreeView(QGraphicsView):
         super().__init__(scene)
 
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+
+    def enterEvent(self, event):
+        # stop annoying default cursor change
+        super().enterEvent(event)
+        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+
+    def mouseReleaseEvent(self, event):
+        # stop annoying default cursor change
+        super().mouseReleaseEvent(event)
+        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
 
 
 @dataclass

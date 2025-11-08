@@ -4,9 +4,10 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Callable
+from typing import List, Dict, Optional, Callable, Tuple
 
 from PyQt5.QtCore import QRectF
+from PyQt5.QtGui import QPen, QColor, QBrush
 from PyQt5.QtWidgets import QApplication, QGraphicsScene, QGraphicsView
 
 
@@ -142,31 +143,117 @@ class ProcessTreeView(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
 
 
+@dataclass
+class PlacedProcess:
+    info: ProcessInfo
+
+    offset: int
+    height: int
+    children: List["PlacedProcess"]
+
+
+class FreeList:
+    def __init__(self):
+        self.free_mask: List[bool] = []
+
+    def __len__(self):
+        return len(self.free_mask)
+
+    def _allocate_find_start(self, length: int) -> int:
+        # try to find an existing empty spot
+        for s in range(len(self.free_mask)):
+            if all(s + i < len(self.free_mask) and self.free_mask[s + i] for i in range(length)):
+                return s
+
+        # try to find free spaces at the end
+        for i in reversed(range(len(self.free_mask))):
+            if self.free_mask[i]:
+                return i + 1
+
+        # start at the end
+        return len(self.free_mask)
+
+    def allocate(self, length: int) -> int:
+        s = self._allocate_find_start(length)
+
+        while len(self.free_mask) < s + length:
+            self.free_mask.append(True)
+
+        for i in range(s, s + length):
+            assert self.free_mask[i]
+            self.free_mask[i] = False
+
+        return s
+
+    def release(self, start: int, length: int):
+        for i in range(start, start + length):
+            assert not self.free_mask[i]
+            self.free_mask[i] = True
+
+
+def place_process(parent: ProcessInfo) -> PlacedProcess:
+    # collect all relevant time points and map them to the processes that start/end at that time
+    time_to_procs: Dict[float, Tuple[List[ProcessInfo], List[ProcessInfo]]] = {}
+    for c in parent.children:
+        time_to_procs.setdefault(c.time_start, ([], []))[0].append(c)
+        time_to_procs.setdefault(c.time_end, ([], []))[1].append(c)
+    times_sorted = sorted(time_to_procs.keys())
+
+    # simulate time left to right
+    free = FreeList()
+    process_running: Dict[int, PlacedProcess] = {}
+    placed_children = []
+
+    for time in times_sorted:
+        procs_start, procs_end = time_to_procs[time]
+
+        # handle process ends (do this first to allow immediate reuse of space)
+        for proc in procs_end:
+            placed = process_running.pop(proc.pid)
+            placed_children.append(placed)
+            free.release(placed.offset, placed.height)
+
+        # handle process starts
+        for proc in procs_start:
+            proc_placed = place_process(proc)
+
+            assert proc_placed.offset == 0
+            proc_placed.offset = free.allocate(proc_placed.height)
+
+            process_running[proc.pid] = proc_placed
+            placed_children.append(proc_placed)
+
+    return PlacedProcess(info=parent, offset=0, height=1 + len(free), children=placed_children)
+
+
 class ProcessTreeScene(QGraphicsScene):
     def __init__(self, processes: Processes):
         super().__init__()
 
+        # TODO add command name
+        # TODO color based on command?
         H = 20
         WF = 200
 
-        def f(info: ProcessInfo, start_y: float) -> int:
-            # TODO make rect actually contain the children?
-            # TODO color by command
-            r = QRectF(
-                WF * info.time_start,
-                start_y,
-                WF * (info.time_end - info.time_start),
-                H
+        def f(p: PlacedProcess, base: int, depth: int):
+            start = base + p.offset
+
+            rect = QRectF(
+                WF * p.info.time_start,
+                H * start,
+                WF * (p.info.time_end - p.info.time_start),
+                H * p.height
             )
-            self.addRect(r)
+            pen = QPen(QColor(0, 0, 0))
+            brush = QBrush(QColor(255, 255, 255 - min(255, int(depth / 8 * 255))))
 
-            # TODO properly "schedule" children, don't just stack them
-            curr_steps = 1
-            for c in info.children:
-                curr_steps += f(c, start_y=start_y + curr_steps * H)
-            return curr_steps
+            self.addRect(rect, pen, brush)
 
-        f(processes.root, start_y=0)
+            for c in p.children:
+                f(p=c, base=start + 1, depth=depth + 1)
+
+        placed = place_process(processes.root)
+        f(placed, base=0, depth=0)
 
 
 def main():

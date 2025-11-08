@@ -8,7 +8,7 @@ from typing import List, Dict, Optional, Callable, Tuple
 
 from PyQt5.QtCore import QRectF, Qt
 from PyQt5.QtGui import QPen, QColor, QBrush
-from PyQt5.QtWidgets import QApplication, QGraphicsScene, QGraphicsView
+from PyQt5.QtWidgets import QApplication, QGraphicsScene, QGraphicsView, QGraphicsItem
 
 
 class Processes:
@@ -152,6 +152,9 @@ class ProcessTreeView(QGraphicsView):
         super().mouseReleaseEvent(event)
         self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
 
+    def wheelEvent(self, event):
+        self.scale(math.exp(event.angleDelta().y() / 360), 1)
+
 
 @dataclass
 class PlacedProcess:
@@ -255,6 +258,7 @@ class ProcessTreeScene(QGraphicsScene):
                 H * p.height
             )
             pen = QPen(QColor(0, 0, 0))
+            pen.setCosmetic(True)
             brush = QBrush(QColor(255, 255, 255 - min(255, int(depth / 8 * 255))))
 
             self.addRect(rect, pen, brush)

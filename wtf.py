@@ -286,6 +286,13 @@ class ProcessTreeView(QGraphicsView):
         super().mouseReleaseEvent(event)
         self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
 
+    def keyReleaseEvent(self, event):
+        if event.key() == Qt.Key_F:
+            event.accept()
+            self.scale_vertical_linear = 0
+            self.scale_horizontal_linear = 0
+            self.rebuild_scene()
+
     def wheelEvent(self, event):
         delta = QPointF(event.angleDelta()) / 360
 

@@ -9,7 +9,7 @@ from typing import List, Dict, Optional, Callable, Tuple
 
 from PyQt5 import QtCore
 from PyQt5.QtCore import QRectF, Qt, QPointF
-from PyQt5.QtGui import QPen, QColor, QBrush, QWheelEvent
+from PyQt5.QtGui import QPen, QColor, QBrush, QWheelEvent, QFontMetrics
 from PyQt5.QtWidgets import QApplication, QGraphicsScene, QGraphicsView
 
 
@@ -278,23 +278,30 @@ class ProcessTreeScene(QGraphicsScene):
         H = 20 * scale_vertical
         WF = 200 * scale_horizontal
 
+        metrics = QFontMetrics(self.font())
+        font_height = metrics.height()
+
         def f(p: PlacedProcess, base: int, depth: int):
             start = base + p.offset
 
             # subtract start time from all positions to avoid 32-bit overflow, which causes issues in the scrollbars
             p_time_end = p.info.time_end if p.info.time_end is not None else processes.time_max
+
+            p_width = WF * (p_time_end - p.info.time_start)
             rect = QRectF(
                 WF * (p.info.time_start - processes.time_min),
                 H * start,
-                WF * (p_time_end - p.info.time_start),
+                p_width,
                 H * p.height
             )
             pen = QPen(QColor(0, 0, 0))
             brush = QBrush(QColor(255, 255, 255 - min(255, int(depth / 8 * 255))))
             self.addRect(rect, pen, brush)
 
-            txt = self.addSimpleText(p.info.command_path)
-            txt.setPos(rect.topLeft())
+            txt_str = p.info.command_path
+            if H >= font_height and p_width >= metrics.width(txt_str):
+                txt = self.addSimpleText(p.info.command_path)
+                txt.setPos(rect.topLeft())
 
             for c in p.children:
                 f(p=c, base=start + 1, depth=depth + 1)

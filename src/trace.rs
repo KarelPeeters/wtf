@@ -4,7 +4,7 @@ use crate::util::MapExt;
 use indexmap::IndexMap;
 use nix::errno::Errno;
 use nix::libc;
-use nix::libc::ptrace_syscall_info;
+use nix::libc::{ptrace_syscall_info, times};
 use nix::sys::signal::SIGSTOP;
 use nix::sys::wait::WaitStatus;
 use nix::sys::{ptrace, wait};
@@ -17,6 +17,7 @@ use syscalls::Sysno;
 
 #[derive(Debug)]
 pub struct Recording {
+    pub time_last: f32,
     pub processes: IndexMap<Pid, ProcessInfo>,
 }
 
@@ -24,8 +25,8 @@ pub struct Recording {
 pub struct ProcessInfo {
     pub pid: Pid,
 
-    pub time_start: Instant,
-    pub time_end: Option<Instant>,
+    pub time_start: f32,
+    pub time_end: Option<f32>,
 
     pub execs: Vec<ProcessExec>,
     // note: children might be reported here before they actually exist as ProcessInfo entries
@@ -34,16 +35,16 @@ pub struct ProcessInfo {
 
 #[derive(Debug)]
 pub struct ProcessExec {
-    pub time: Instant,
+    pub time: f32,
     pub path: String,
     pub argv: Vec<String>,
 }
 
 impl ProcessInfo {
-    pub fn new_start_now(pid: Pid) -> Self {
+    pub fn new(pid: Pid, time_start: f32) -> Self {
         Self {
             pid,
-            time_start: Instant::now(),
+            time_start,
             time_end: None,
             execs: Vec::new(),
             children: Vec::new(),
@@ -76,12 +77,15 @@ pub fn record_trace(mut cmd: Command) -> Recording {
     ptrace::setoptions(root_pid, ptrace_options).expect("failed to set ptrace options");
 
     // result data structure
+    // TODO is this time info accurate enough?
+    let time_start = Instant::now();
     let mut recording = Recording {
+        time_last: 0.0,
         processes: IndexMap::new(),
     };
     recording
         .processes
-        .insert_first(root_pid, ProcessInfo::new_start_now(root_pid));
+        .insert_first(root_pid, ProcessInfo::new(root_pid, 0.0));
 
     // track in-progress syscall per child
     let mut partial_syscalls: HashMap<Pid, SyscallEntry> = HashMap::new();
@@ -160,7 +164,7 @@ pub fn record_trace(mut cmd: Command) -> Recording {
                                 println!("[{pid}] syscall exit exec-like");
                                 if info_exir.sval == 0 {
                                     let proc_exec = ProcessExec {
-                                        time: Instant::now(),
+                                        time: time_start.elapsed().as_secs_f32(),
                                         path: String::from_utf8_lossy(&args.path).into_owned(),
                                         argv: vec![],
                                     };
@@ -180,7 +184,7 @@ pub fn record_trace(mut cmd: Command) -> Recording {
             WaitStatus::PtraceEvent(pid, _signal, _event) => Some(pid),
             // process exited, cleanup and maybe stop tracing
             WaitStatus::Exited(pid, _) | WaitStatus::Signaled(pid, _, _) => {
-                recording.processes.get_mut(&pid).unwrap().time_end = Some(Instant::now());
+                recording.processes.get_mut(&pid).unwrap().time_end = Some(time_start.elapsed().as_secs_f32());
                 partial_syscalls.remove(&pid);
                 if pid == root_pid {
                     break;
@@ -191,7 +195,8 @@ pub fn record_trace(mut cmd: Command) -> Recording {
             WaitStatus::Stopped(pid, signal) => {
                 if signal == SIGSTOP && !recording.processes.contains_key(&pid) {
                     // initial stop for new child process, create it
-                    recording.processes.insert_first(pid, ProcessInfo::new_start_now(pid));
+                    let proc_info = ProcessInfo::new(pid, time_start.elapsed().as_secs_f32());
+                    recording.processes.insert_first(pid, proc_info);
                 }
 
                 Some(pid)

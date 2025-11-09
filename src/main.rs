@@ -2,8 +2,12 @@
 
 use clap::Parser;
 use eframe::Frame;
+use egui::epaint::CornerRadiusF32;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
-use egui::{Button, CentralPanel, Context, ScrollArea};
+use egui::{CentralPanel, Color32, Context, Pos2, Rect, ScrollArea};
+use itertools::enumerate;
+use std::process::Command;
+use wtf::trace::{record_trace, Recording};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -12,33 +16,33 @@ struct Args {
 }
 
 fn main() {
-    // let args = Args::parse();
-    // assert!(args.command.len() > 0);
-    //
-    // let mut cmd = Command::new(&args.command[0]);
-    // cmd.args(&args.command[1..]);
-    // let rec = record_trace(cmd);
-    //
-    // println!("Recording complete:");
-    // for info in rec.processes.values() {
-    //     println!("  {:?}", info);
-    // }
+    let args = Args::parse();
+    assert!(args.command.len() > 0);
 
-    main_gui().expect("GUI failed");
+    let mut cmd = Command::new(&args.command[0]);
+    cmd.args(&args.command[1..]);
+    let rec = record_trace(cmd);
+
+    println!("Recording complete:");
+    for info in rec.processes.values() {
+        println!("  {:?}", info);
+    }
+
+    main_gui(rec).expect("GUI failed");
 }
 
-fn main_gui() -> eframe::Result<()> {
+fn main_gui(recording: Recording) -> eframe::Result<()> {
     // TODO add icon
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([400.0, 300.0])
-            .with_min_inner_size([300.0, 220.0]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([400.0, 300.0]),
         ..Default::default()
     };
-    eframe::run_native("wtf", native_options, Box::new(|cc| Ok(Box::new(App {}))))
+    eframe::run_native("wtf", native_options, Box::new(|cc| Ok(Box::new(App { recording }))))
 }
 
-struct App {}
+struct App {
+    recording: Recording,
+}
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &Context, frame: &mut Frame) {
@@ -49,11 +53,26 @@ impl eframe::App for App {
                 .max_height(f32::INFINITY)
                 .scroll_source(ScrollSource::SCROLL_BAR | ScrollSource::DRAG)
                 .show(ui, |ui| {
-                    ui.take_available_space();
+                    const W: f32 = 200.0;
+                    const H: f32 = 20.0;
 
-                    for i in 0..20 {
-                        ui.add(Button::new("click me"));
+                    let painter = ui.painter();
+                    let mut bounding_box = Rect::NOTHING;
+
+                    for (i, proc) in enumerate(self.recording.processes.values()) {
+                        let time_end = proc.time_end.unwrap_or(self.recording.time_last);
+                        let rect = Rect {
+                            min: Pos2::new(W * proc.time_start, H * (i as f32)),
+                            max: Pos2::new(W * time_end, H * ((i + 1) as f32)),
+                        };
+                        bounding_box |= rect;
+
+                        let color = Color32::from_gray(128);
+                        painter.rect_filled(rect, CornerRadiusF32::ZERO, color);
                     }
+
+                    ui.allocate_space(bounding_box.size());
+                    ui.take_available_space();
                 });
         });
     }

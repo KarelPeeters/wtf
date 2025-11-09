@@ -11,11 +11,11 @@ pub struct PlacedProcess {
     pub pid: Pid,
 
     pub depth: usize,
-    pub row: usize,
-    pub height: usize,
+    pub row_offset: usize,
+    pub row_height: usize,
 
     pub children: Vec<PlacedProcess>,
-    
+
     // bounds
     pub max_depth: usize,
     pub time_bound: RangeInclusive<f32>,
@@ -28,11 +28,16 @@ pub fn place_processes(rec: &Recording) -> PlacedProcess {
 }
 
 impl PlacedProcess {
-    pub fn visit(&self, f: &mut impl FnMut(&PlacedProcess)) {
-        f(self);
-        for child in &self.children {
-            child.visit(f);
+    pub fn visit(&self, f: &mut impl FnMut(&PlacedProcess, usize)) {
+        fn visit_impl(slf: &PlacedProcess, offset_start: usize, f: &mut impl FnMut(&PlacedProcess, usize)) {
+            let offset = offset_start + slf.row_offset;
+            f(slf, offset);
+            for child in &slf.children {
+                visit_impl(child, offset, f);
+            }
         }
+
+        visit_impl(self, 0, f)
     }
 }
 
@@ -71,14 +76,15 @@ fn place_process(rec: &Recording, cache: &mut TimeCache, pid: Pid, depth: usize)
 
         // handle child starts
         for child in children_start {
-            let mut child_placed = place_process(rec, cache, child, depth+1);
-            assert_eq!(child_placed.row, 0);
-            
+            let mut child_placed = place_process(rec, cache, child, depth + 1);
+            assert_eq!(child_placed.row_offset, 0);
+
             max_depth = max_depth.max(child_placed.max_depth);
 
-            let row = free.allocate(child_placed.height);
-            child_placed.row = row;
-            children_active.insert_first(child, row..row + child_placed.height);
+            let child_height = child_placed.row_height;
+            let child_row = free.allocate(child_height);
+            child_placed.row_offset = 1 + child_row;
+            children_active.insert_first(child, child_row..child_row + child_height);
             placed_children.push(child_placed);
         }
     }
@@ -87,8 +93,8 @@ fn place_process(rec: &Recording, cache: &mut TimeCache, pid: Pid, depth: usize)
     PlacedProcess {
         pid,
         depth,
-        row: 0,
-        height: 1 + free.len(),
+        row_offset: 0,
+        row_height: 1 + free.len(),
         children: placed_children,
         max_depth,
         time_bound: process_time_bound(rec, cache, pid),

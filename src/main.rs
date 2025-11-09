@@ -4,7 +4,7 @@ use clap::Parser;
 use eframe::Frame;
 use egui::epaint::CornerRadiusF32;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
-use egui::{CentralPanel, Color32, Context, FontId, Pos2, Rect, ScrollArea, Sense};
+use egui::{CentralPanel, Color32, Context, FontId, Pos2, Rect, ScrollArea, Sense, Stroke, StrokeKind};
 use std::ops::RangeInclusive;
 use std::process::Command;
 use wtf::layout::{place_processes, PlacedProcess};
@@ -74,10 +74,10 @@ impl eframe::App for App {
                     let mut bounding_box = Rect::NOTHING;
                     let mut galleys = vec![];
 
-                    self.placed.visit(&mut |placed| {
+                    self.placed.visit(&mut |placed, row| {
                         let proc = self.recording.processes.get(&placed.pid).unwrap();
 
-                        let proc_rect = self.proc_rect(placed.row, placed.height, placed.time_bound.clone());
+                        let proc_rect = self.proc_rect(row, placed.row_height, placed.time_bound.clone());
                         bounding_box |= proc_rect;
 
                         // TODO skip text layout if out of bounds
@@ -99,19 +99,24 @@ impl eframe::App for App {
                     // second pass: actually paint
                     // TODO keep animating this while the process is still running?
                     let time_bound_end = *self.placed.time_bound.end();
-                    self.placed.visit(&mut |placed| {
+                    self.placed.visit(&mut |placed, row| {
                         let proc = self.recording.processes.get(&placed.pid).unwrap();
                         let proc_time = proc.time_start..=proc.time_end.unwrap_or(time_bound_end);
 
-                        let proc_rect_header = self.proc_rect(placed.row, 1, proc_time.clone()).translate(offset);
-                        let proc_rect_full = self.proc_rect(placed.row, placed.height, proc_time).translate(offset);
+                        let proc_rect_header = self.proc_rect(row, 1, proc_time.clone()).translate(offset);
+                        let proc_rect_full = self.proc_rect(row, placed.row_height, proc_time).translate(offset);
 
                         // TODO better coloring
                         // TODO stroke around all children?
                         let color_scale = placed.depth as f32 / self.placed.max_depth as f32;
                         let color = Color32::from_gray((20.0 + (80.0 * color_scale)) as u8);
-                        painter.rect_filled(proc_rect_full, CornerRadiusF32::ZERO, color);
-                        // painter.rect_stroke(proc_rect_full, CornerRadiusF32::ZERO, (1.0, color), StrokeKind::Inside);
+                        painter.rect(
+                            proc_rect_full,
+                            CornerRadiusF32::ZERO,
+                            color,
+                            Stroke::NONE,
+                            StrokeKind::Inside,
+                        );
 
                         let galley = galleys.next().unwrap();
                         painter.galley(proc_rect_header.min, galley, text_color);
@@ -130,7 +135,6 @@ impl eframe::App for App {
 }
 
 impl App {
-    // TODO flip y axis
     fn proc_rect(&self, row: usize, height: usize, time: RangeInclusive<f32>) -> Rect {
         let h = 20.0;
         let w = 200.0 * (self.zoom_linear / 100.0).exp();

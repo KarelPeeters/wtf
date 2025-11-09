@@ -4,10 +4,11 @@ use clap::Parser;
 use eframe::Frame;
 use egui::epaint::CornerRadiusF32;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
-use egui::{CentralPanel, Color32, Context, Pos2, Rect, ScrollArea, Sense};
+use egui::{CentralPanel, Color32, Context, FontId, Pos2, Rect, ScrollArea, Sense};
 use itertools::enumerate;
+use std::iter::zip;
 use std::process::Command;
-use wtf::trace::{record_trace, Recording};
+use wtf::trace::{record_trace, ProcessInfo, Recording};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -51,29 +52,53 @@ impl eframe::App for App {
                 .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
                 .scroll_source(ScrollSource::SCROLL_BAR | ScrollSource::DRAG)
                 .show(ui, |ui| {
-                    const W: f32 = 200.0;
-                    const H: f32 = 20.0;
-
                     ui.take_available_space();
 
-                    let proc_with_rect = enumerate(self.recording.processes.values()).map(|(i, proc)| {
-                        let time_end = proc.time_end.unwrap_or(self.recording.time_last);
-                        let rect = Rect {
-                            min: Pos2::new(W * proc.time_start, H * (i as f32)),
-                            max: Pos2::new(W * time_end, H * ((i + 1) as f32)),
-                        };
-                        (proc, rect)
-                    });
+                    // first pass: compute bounding box and prepare text
+                    let mut bounding_box = Rect::NOTHING;
+                    let mut galleys = vec![];
+                    let text_color = ui.visuals().text_color();
 
-                    let bounding_box = proc_with_rect.clone().fold(Rect::NOTHING, |b, (_, r)| b | r);
+                    for (i, proc) in enumerate(self.recording.processes.values()) {
+                        let proc_rect = self.proc_rect(i, proc);
+                        bounding_box |= proc_rect;
+
+                        let text = proc.execs.first().map(|exec| exec.path.as_str()).unwrap_or("?");
+                        let galley = ui
+                            .painter()
+                            .layout_no_wrap(text.to_owned(), FontId::default(), text_color);
+                        bounding_box |= galley.rect.translate(proc_rect.min.to_vec2());
+                        galleys.push(galley);
+                    }
+
+                    // allocate space and create painter
                     let (response, painter) = ui.allocate_painter(bounding_box.size(), Sense::empty());
                     let offset = response.rect.min.to_vec2();
 
-                    for (_, rect) in proc_with_rect {
+                    // second pass: actually paint
+                    for (i, (proc, galley)) in enumerate(zip(self.recording.processes.values(), galleys)) {
+                        let proc_rect = self.proc_rect(i, proc);
+
                         let color = Color32::from_gray(128);
-                        painter.rect_filled(rect.translate(offset), CornerRadiusF32::ZERO, color);
+                        painter.rect_filled(proc_rect.translate(offset), CornerRadiusF32::ZERO, color);
+
+                        painter.galley(proc_rect.min + offset, galley, text_color);
                     }
                 });
         });
+    }
+}
+
+impl App {
+    fn proc_rect(&self, i: usize, proc: &ProcessInfo) -> Rect {
+        const W: f32 = 200.0;
+        const H: f32 = 20.0;
+
+        let time_end = proc.time_end.unwrap_or(self.recording.time_last);
+
+        Rect {
+            min: Pos2::new(W * proc.time_start, H * (i as f32)),
+            max: Pos2::new(W * time_end, H * ((i + 1) as f32)),
+        }
     }
 }

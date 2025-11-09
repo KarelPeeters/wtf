@@ -4,7 +4,7 @@ use crate::util::MapExt;
 use indexmap::IndexMap;
 use nix::errno::Errno;
 use nix::libc;
-use nix::libc::{ptrace_syscall_info, times};
+use nix::libc::ptrace_syscall_info;
 use nix::sys::signal::SIGSTOP;
 use nix::sys::wait::WaitStatus;
 use nix::sys::{ptrace, wait};
@@ -17,7 +17,7 @@ use syscalls::Sysno;
 
 #[derive(Debug)]
 pub struct Recording {
-    pub time_last: f32,
+    pub root_pid: Pid,
     pub processes: IndexMap<Pid, ProcessInfo>,
 }
 
@@ -80,7 +80,7 @@ pub fn record_trace(mut cmd: Command) -> Recording {
     // TODO is this time info accurate enough?
     let time_start = Instant::now();
     let mut recording = Recording {
-        time_last: 0.0,
+        root_pid,
         processes: IndexMap::new(),
     };
     recording
@@ -224,13 +224,16 @@ enum SyscallEntry {
 #[derive(Debug, Copy, Clone)]
 struct ExecArgPointers {
     path: u64,
+    #[allow(dead_code)]
     argv: u64,
+    #[allow(dead_code)]
     envp: u64,
 }
 
 #[derive(Debug)]
 struct ExecArgs {
     path: Vec<u8>,
+    #[allow(dead_code)]
     argv: Vec<Vec<u8>>,
 }
 
@@ -266,8 +269,9 @@ fn ptrace_read_str(pid: Pid, start: *mut libc::c_void) -> nix::Result<Vec<u8>> {
     // TODO limit max length?
     let mut result = Vec::new();
 
-    for offset in 0isize.. {
-        let word = ptrace::read(pid, unsafe { start.offset(offset) })?;
+    for offset_word in 0isize.. {
+        let offset_byte = offset_word * size_of::<libc::c_long>() as isize;
+        let word = ptrace::read(pid, unsafe { start.offset(offset_byte) })?;
         for b in word.to_ne_bytes() {
             if b == 0 {
                 return Ok(result);

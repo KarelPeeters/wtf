@@ -38,11 +38,21 @@ fn main_gui(recording: Recording) -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default().with_inner_size([400.0, 300.0]),
         ..Default::default()
     };
-    eframe::run_native("wtf", native_options, Box::new(|cc| Ok(Box::new(App { recording }))))
+    eframe::run_native(
+        "wtf",
+        native_options,
+        Box::new(|cc| {
+            Ok(Box::new(App {
+                recording,
+                zoom_linear: 0.0,
+            }))
+        }),
+    )
 }
 
 struct App {
     recording: Recording,
+    zoom_linear: f32,
 }
 
 impl eframe::App for App {
@@ -79,10 +89,16 @@ impl eframe::App for App {
                     for (i, (proc, galley)) in enumerate(zip(self.recording.processes.values(), galleys)) {
                         let proc_rect = self.proc_rect(i, proc);
 
-                        let color = Color32::from_gray(128);
+                        let color = Color32::from_gray(80);
                         painter.rect_filled(proc_rect.translate(offset), CornerRadiusF32::ZERO, color);
 
                         painter.galley(proc_rect.min + offset, galley, text_color);
+                    }
+
+                    // handle zoom events
+                    if ui.is_enabled() && ui.rect_contains_pointer(ui.min_rect()) {
+                        let delta = ui.input(|input| input.raw_scroll_delta);
+                        self.zoom_linear += delta.y;
                     }
                 });
         });
@@ -91,14 +107,14 @@ impl eframe::App for App {
 
 impl App {
     fn proc_rect(&self, i: usize, proc: &ProcessInfo) -> Rect {
-        const W: f32 = 200.0;
-        const H: f32 = 20.0;
+        let h = 20.0;
+        let w = 200.0 * (self.zoom_linear / 100.0).exp();
 
         let time_end = proc.time_end.unwrap_or(self.recording.time_last);
 
         Rect {
-            min: Pos2::new(W * proc.time_start, H * (i as f32)),
-            max: Pos2::new(W * time_end, H * ((i + 1) as f32)),
+            min: Pos2::new(w * proc.time_start, h * (i as f32)),
+            max: Pos2::new(w * time_end, h * ((i + 1) as f32)),
         }
     }
 }

@@ -5,6 +5,7 @@ import math
 import os
 import re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 from threading import Thread
@@ -17,6 +18,8 @@ from PyQt5.QtWidgets import QApplication, QGraphicsScene, QGraphicsView
 
 
 class Processes:
+    mutex: threading.Lock
+
     # final results
     root: Optional["ProcessInfo"]
     time_min: float
@@ -28,6 +31,8 @@ class Processes:
     unfinished: Dict[int, str]
 
     def __init__(self):
+        self.mutex = threading.Lock()
+
         self.root = None
         self.time_min = math.inf
         self.time_max = -math.inf
@@ -54,10 +59,22 @@ class ProcessInfo:
     parent_pid: Optional[int]
 
     time_start: float
-    time_end: Optional[float]
+    time_end_raw: Optional[float]
 
     commands: List[ProcessCommand]
     children: List["ProcessInfo"]
+
+    def time_end(self, fallback: float):
+        result = self.time_start
+
+        for c in self.commands:
+            result = max(result, c.time)
+        for c in self.children:
+            result = max(result, c.time_end(fallback))
+
+        result = max(result, self.time_end_raw if self.time_end_raw is not None else self.time_start)
+
+        return result
 
 
 PATTERN_STR = r"\"(?:\\x[0-9a-f]+)*\""
@@ -90,73 +107,73 @@ def parse_hex_str_list(s: str) -> List[str]:
 
 
 def handle_strace_line(processes: Processes, s: str):
-    print("Handling strace line")
-
     # split input
     pid_str, time_str, rest = s.split(" ", 2)
     pid = int(pid_str)
     time = float(time_str)
     rest = rest.rstrip()
 
-    processes.report_time(time)
+    with processes.mutex:
+        processes.report_time(time)
 
-    # re-join unfinished/resumed syscalls
-    UNFINISHED_SUFFIX = " <unfinished ...>"
-    RESUMED_PREFIX_START = "<... "
-    RESUMED_PREFIX_END = " resumed>"
+        # re-join unfinished/resumed syscalls
+        UNFINISHED_SUFFIX = " <unfinished ...>"
+        RESUMED_PREFIX_START = "<... "
+        RESUMED_PREFIX_END = " resumed>"
 
-    if rest.endswith(UNFINISHED_SUFFIX):
-        assert pid not in processes.unfinished
-        processes.unfinished[pid] = rest[:-len(UNFINISHED_SUFFIX)]
-        return
+        if rest.endswith(UNFINISHED_SUFFIX):
+            assert pid not in processes.unfinished
+            processes.unfinished[pid] = rest[:-len(UNFINISHED_SUFFIX)]
+            return
 
-    if rest.startswith(RESUMED_PREFIX_START):
-        pos = rest.index(RESUMED_PREFIX_END)
-        prev = processes.unfinished.pop(pid)
-        rest = prev + rest[pos + len(RESUMED_PREFIX_END):]
+        if rest.startswith(RESUMED_PREFIX_START):
+            pos = rest.index(RESUMED_PREFIX_END)
+            prev = processes.unfinished.pop(pid)
+            rest = prev + rest[pos + len(RESUMED_PREFIX_END):]
 
-    # parent spawning child process
-    if rest.startswith("clone(") or rest.startswith("clone3(") or rest.startswith("fork(") or rest.startswith("vfork("):
-        _, child_pid_str = rest.rsplit("=", 1)
-        child_pid = int(child_pid_str.strip())
+        # parent spawning child process
+        if rest.startswith("clone(") or rest.startswith("clone3(") or rest.startswith("fork(") or rest.startswith(
+                "vfork("):
+            _, child_pid_str = rest.rsplit("=", 1)
+            child_pid = int(child_pid_str.strip())
 
-        info = ProcessInfo(pid=child_pid, parent_pid=pid, time_start=time, time_end=None, commands=[], children=[])
-        processes.processes[child_pid] = info
-        processes.processes[pid].children.append(info)
+            info = ProcessInfo(
+                pid=child_pid, parent_pid=pid, time_start=time, time_end_raw=None,
+                commands=[], children=[]
+            )
+            processes.processes[child_pid] = info
+            processes.processes[pid].children.append(info)
 
-    # process starting a binary
-    elif rest.startswith("execve(") or rest.startswith("execat("):
-        m = REGEX_EXEC.fullmatch(rest)
-        if not m:
-            print("fail")
-        cmd = ProcessCommand(
-            time=time,
-            path=parse_hex_str(m.group("path")),
-            argv=parse_hex_str_list(m.group("argv"))
-        )
+        # process starting a binary
+        elif rest.startswith("execve(") or rest.startswith("execat("):
+            m = REGEX_EXEC.fullmatch(rest)
+            cmd = ProcessCommand(
+                time=time,
+                path=parse_hex_str(m.group("path")),
+                argv=parse_hex_str_list(m.group("argv"))
+            )
 
-        print(f"pid {pid} execve {cmd}")
+            if pid in processes.processes:
+                # exec of existing process
+                info = processes.processes[pid]
+            else:
+                # initial exec for root process
+                assert processes.root is None
+                info = ProcessInfo(pid=pid, parent_pid=None, time_start=time, time_end_raw=None, commands=[cmd],
+                                   children=[])
+                processes.processes[pid] = info
+                processes.root = info
 
-        if pid in processes.processes:
-            # exec of existing process
-            info = processes.processes[pid]
+            info.commands.append(cmd)
+
+        elif rest.startswith("exit(") or rest.startswith("exit_group("):
+            processes.processes[pid].time_end_raw = time
+
+        # ignored
+        elif any(rest.startswith(x) for x in ("wait3(", "wait4(", "tgkill(", "+++", "<...", "---")):
+            pass
         else:
-            # initial exec for root process
-            assert processes.root is None
-            info = ProcessInfo(pid=pid, parent_pid=None, time_start=time, time_end=None, commands=[cmd], children=[])
-            processes.processes[pid] = info
-            processes.root = info
-
-        info.commands.append(cmd)
-
-    elif rest.startswith("exit(") or rest.startswith("exit_group("):
-        processes.processes[pid].time_end = time
-
-    # ignored
-    elif any(rest.startswith(x) for x in ("wait3(", "wait4(", "tgkill(", "+++", "<...", "---")):
-        pass
-    else:
-        print("Warning: unhandled strace line:", rest)
+            print("Warning: unhandled strace line:", rest)
 
 
 def print_processes(root: ProcessInfo):
@@ -225,7 +242,7 @@ class FreeList:
 
         # try to find free spaces at the end
         for i in reversed(range(len(self.free_mask))):
-            if self.free_mask[i]:
+            if not self.free_mask[i]:
                 return i + 1
 
         # start at the end
@@ -253,8 +270,7 @@ def place_process(processes: Processes, parent: ProcessInfo) -> PlacedProcess:
     # collect all relevant time points and map them to the processes that start/end at that time
     time_to_procs: Dict[float, Tuple[List[ProcessInfo], List[ProcessInfo]]] = {}
     for c in parent.children:
-        c_time_end = c.time_end if c.time_end is not None else processes.time_max
-        assert c_time_end >= c.time_start
+        c_time_end = c.time_end(processes.time_max)
         if c.time_start == c_time_end:
             continue
 
@@ -267,8 +283,8 @@ def place_process(processes: Processes, parent: ProcessInfo) -> PlacedProcess:
     process_running: Dict[int, PlacedProcess] = {}
     placed_children = []
 
-    for time in times_sorted:
-        procs_start, procs_end = time_to_procs[time]
+    for curr_time in times_sorted:
+        procs_start, procs_end = time_to_procs[curr_time]
 
         # handle process ends (do this first to allow immediate reuse of space)
         for proc in procs_end:
@@ -306,7 +322,7 @@ class ProcessTreeScene(QGraphicsScene):
             start = base + p.offset
 
             # subtract start time from all positions to avoid 32-bit overflow, which causes issues in the scrollbars
-            p_time_end = p.info.time_end if p.info.time_end is not None else processes.time_max
+            p_time_end = p.info.time_end(processes.time_max)
 
             p_width = WF * (p_time_end - p.info.time_start)
             rect = QRectF(
@@ -330,9 +346,10 @@ class ProcessTreeScene(QGraphicsScene):
             for c in p.children:
                 f(p=c, base=start + 1, depth=depth + 1)
 
-        if processes.root is not None:
-            placed = place_process(processes, processes.root)
-            f(placed, base=0, depth=0)
+        with processes.mutex:
+            if processes.root is not None:
+                placed = place_process(processes, processes.root)
+                f(placed, base=0, depth=0)
 
 
 class ProcessTreeView(QGraphicsView):

@@ -6,9 +6,9 @@ import os
 import re
 import subprocess
 import threading
-import time
 from dataclasses import dataclass
 from threading import Thread
+from time import perf_counter
 from typing import List, Dict, Optional, Callable, Tuple
 
 from PyQt5 import QtCore
@@ -158,15 +158,24 @@ def handle_strace_line(processes: Processes, s: str):
                 info = processes.processes[pid]
             else:
                 # initial exec for root process
-                assert processes.root is None
-                info = ProcessInfo(pid=pid, parent_pid=None, time_start=time, time_end_raw=None, commands=[cmd],
-                                   children=[])
+                if processes.root is not None:
+                    print(f"Warning: Orphan exec: {cmd}")
+                    return
+
+                info = ProcessInfo(
+                    pid=pid, parent_pid=None, time_start=time, time_end_raw=None, commands=[cmd],
+                    children=[]
+                )
                 processes.processes[pid] = info
                 processes.root = info
 
             info.commands.append(cmd)
 
         elif rest.startswith("exit(") or rest.startswith("exit_group("):
+            if pid not in processes.processes:
+                print(f"Warning: Orphan exit: {rest}")
+                return
+
             processes.processes[pid].time_end_raw = time
 
         # ignored
@@ -211,6 +220,7 @@ def run_strace(command: List[str], callback: Callable[[str], None]) -> int:
         for line in frx:
             # TODO stop logging
             print(line, end='', file=log_file)
+            log_file.flush()
             callback(line)
 
     # the rx pipe has been closed because strace has exited,
@@ -318,6 +328,9 @@ class ProcessTreeScene(QGraphicsScene):
         metrics = QFontMetrics(self.font())
         font_height = metrics.height()
 
+        pen = QPen(QColor(0, 0, 0))
+        brush = [QBrush(QColor(255, 255, 255 - min(255, int(depth / 8 * 255)))) for depth in range(8)]
+
         def f(p: PlacedProcess, base: int, depth: int):
             start = base + p.offset
 
@@ -331,15 +344,13 @@ class ProcessTreeScene(QGraphicsScene):
                 p_width,
                 H * p.height
             )
-            pen = QPen(QColor(0, 0, 0))
-            brush = QBrush(QColor(255, 255, 255 - min(255, int(depth / 8 * 255))))
-            self.addRect(rect, pen, brush)
+            self.addRect(rect, pen, brush[min(depth, len(brush) - 1)])
 
             txt_str = "?"
             if p.info.commands:
                 txt_str = p.info.commands[-1].path
 
-            if H >= font_height and p_width >= metrics.width(txt_str):
+            if H >= font_height:
                 txt = self.addSimpleText(txt_str)
                 txt.setPos(rect.topLeft())
 
@@ -348,7 +359,9 @@ class ProcessTreeScene(QGraphicsScene):
 
         with processes.mutex:
             if processes.root is not None:
+                perf_start = perf_counter()
                 placed = place_process(processes, processes.root)
+                print("Placing took", perf_counter() - perf_start, "s")
                 f(placed, base=0, depth=0)
 
 
@@ -365,24 +378,32 @@ class ProcessTreeView(QGraphicsView):
         self.scale_horizontal_linear = 0
         self.scale_vertical_linear = 0
 
-        self.signal_processes_updated.connect(self.slot_processes_updated)
+        self.signal_processes_updated.connect(self.slot_processes_updated, Qt.QueuedConnection)
 
         self.processes = processes
+        self.rebuild_pending = False
+
         self.rebuild_scene()
 
     @QtCore.pyqtSlot()
     def slot_processes_updated(self):
+        if not self.rebuild_pending:
+            self.rebuild_pending = True
+            QtCore.QTimer.singleShot(0, self._do_rebuild)
+
+    def _do_rebuild(self):
+        self.rebuild_pending = False
         self.rebuild_scene()
 
     def rebuild_scene(self):
         # TODO benchmark if this is slow
-        perf_start = time.perf_counter()
+        perf_start = perf_counter()
         scene = ProcessTreeScene(
             processes=self.processes,
             scale_horizontal=math.exp(self.scale_horizontal_linear),
             scale_vertical=math.exp(self.scale_vertical_linear),
         )
-        print(f"Scene building took {time.perf_counter() - perf_start}s")
+        print(f"Scene building took {perf_counter() - perf_start}s")
         self.setScene(scene)
 
     def enterEvent(self, event):

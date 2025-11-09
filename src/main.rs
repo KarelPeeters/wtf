@@ -7,6 +7,7 @@ use nix::libc::ptrace_syscall_info;
 use nix::sys::wait::WaitStatus;
 use nix::sys::{ptrace, wait};
 use nix::unistd::Pid;
+use std::collections::HashMap;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 use syscalls::Sysno;
@@ -23,18 +24,17 @@ fn main() {
     assert!(args.command.len() > 0);
 
     // start the child process
-    let mut cmd = Command::new(&args.command[0]);
-    cmd.args(&args.command[1..]);
+    let mut root_cmd = Command::new(&args.command[0]);
+    root_cmd.args(&args.command[1..]);
     unsafe {
-        cmd.pre_exec(|| {
+        // tell the child process to start being traced
+        root_cmd.pre_exec(|| {
             ptrace::traceme().map_err(errno_to_io)?;
             Ok(())
         })
     };
-
-    println!("Spawning child process");
-    let child = cmd.spawn().expect("failed to spawn child");
-    let child_pid = Pid::from_raw(child.id() as i32);
+    let root = root_cmd.spawn().expect("failed to spawn child");
+    let root_pid = Pid::from_raw(root.id() as i32);
 
     // options:
     // * PTRACE_O_TRACESYSGOOD: add mask to syscall stops, allows parsing WaitStatus::PtraceSyscall
@@ -45,27 +45,22 @@ fn main() {
         | ptrace::Options::PTRACE_O_TRACECLONE
         | ptrace::Options::PTRACE_O_TRACEFORK
         | ptrace::Options::PTRACE_O_TRACEVFORK;
-    ptrace::setoptions(child_pid, ptrace_options).expect("failed to set ptrace options");
+    ptrace::setoptions(root_pid, ptrace_options).expect("failed to set ptrace options");
 
-    let mut partial_syscall = None;
+    // track in-progress syscall per child
+    let mut partial_syscalls: HashMap<Pid, SyscallEntry> = HashMap::new();
 
+    // main tracing event loop
     loop {
-        ptrace::syscall(child_pid, None).expect("failed ptrace::syscall");
-        let status = wait::waitpid(child_pid, None).expect("failed wait::waitpid");
-        match status {
-            WaitStatus::Exited(pid, _status) => {
-                // root child exited, we can stop tracing
-                if pid == child_pid {
-                    break;
-                }
-            }
+        let status = wait::waitpid(None, None).expect("failed wait::waitpid");
+
+        let resume_pid = match status {
+            // handle syscall
             WaitStatus::PtraceSyscall(pid) => {
                 let info = ptrace_syscall_info(pid).expect("failed ptrace::syscall_info");
 
                 match info.op {
                     libc::PTRACE_SYSCALL_INFO_ENTRY => {
-                        assert!(partial_syscall.is_none());
-
                         let entry = unsafe { &info.u.entry };
                         let nr = Sysno::new(entry.nr as usize);
 
@@ -78,7 +73,7 @@ fn main() {
                             };
 
                             if !matches!(res, SyscallEntry::Ignore) {
-                                println!("syscall entry {nr:?}");
+                                println!("[{pid}] syscall entry {nr:?}");
                             }
 
                             res
@@ -87,12 +82,12 @@ fn main() {
                             SyscallEntry::Ignore
                         };
 
-                        partial_syscall = Some(next_partial_syscall);
+                        partial_syscalls.insert(pid, next_partial_syscall);
                     }
                     libc::PTRACE_SYSCALL_INFO_EXIT => {
-                        let partial = partial_syscall.take().unwrap();
+                        let partial = partial_syscalls.remove(&pid).unwrap_or(SyscallEntry::Ignore);
 
-                        let entry = unsafe { &info.u.exit };
+                        let exit_info = unsafe { &info.u.exit };
 
                         match partial {
                             SyscallEntry::Ignore => {}
@@ -108,15 +103,15 @@ fn main() {
                         }
 
                         if !matches!(partial, SyscallEntry::Ignore) {
-                            println!("syscall exit {:?} -> {}", partial, entry.sval);
+                            println!("[{pid}] syscall exit {:?} -> {}", partial, exit_info.sval);
                         }
                     }
                     _ => {}
                 }
+
+                Some(pid)
             }
-            // ignore these, we only care about (some) syscalls
-            WaitStatus::Signaled(_, _, _) => todo!(),
-            WaitStatus::Stopped(_, _) => {}
+            // handle event
             WaitStatus::PtraceEvent(pid, signal, extra) => {
                 // note: these don't necessarily correspond to the original syscalls, depending on the flags
                 let event_kind = match extra {
@@ -126,9 +121,42 @@ fn main() {
                     _ => None,
                 };
                 println!("ptrace event: pid={pid} signal={signal:?} extra={extra} {event_kind:?}");
+
+                // Get the new child PID
+                if matches!(
+                    extra,
+                    libc::PTRACE_EVENT_FORK | libc::PTRACE_EVENT_VFORK | libc::PTRACE_EVENT_CLONE
+                ) {
+                    match ptrace::getevent(pid) {
+                        Ok(new_pid) => {
+                            let new_child_pid = Pid::from_raw(new_pid as i32);
+                            println!("New child process: {new_child_pid}");
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to get new child pid: {e}");
+                        }
+                    }
+                }
+
+                Some(pid)
             }
-            WaitStatus::Continued(_) => todo!(),
-            WaitStatus::StillAlive => todo!(),
+            // processes exited, cleanup and maybe stop tracing
+            WaitStatus::Exited(pid, _) | WaitStatus::Signaled(pid, _, _) => {
+                partial_syscalls.remove(&pid);
+                if pid == root_pid {
+                    break;
+                }
+                None
+            }
+            // stopped by some signal, just continue
+            WaitStatus::Stopped(pid, _signal) => Some(pid),
+            // cases that shouldn't happen
+            WaitStatus::Continued(_) => unreachable!("we didn't set WaitPidFlag::WCONTINUE"),
+            WaitStatus::StillAlive => unreachable!("we didn't set WaitPidFlag::WNOHANG"),
+        };
+
+        if let Some(resume_pid) = resume_pid {
+            ptrace::syscall(resume_pid, None).expect("failed ptrace::syscall");
         }
     }
 }

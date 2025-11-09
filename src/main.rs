@@ -41,7 +41,7 @@ struct ProcessInfo {
 #[derive(Debug)]
 struct ProcessExec {
     time: Instant,
-    name: String,
+    path: String,
     argv: Vec<String>,
 }
 
@@ -109,13 +109,34 @@ fn main() {
 
                 match info.op {
                     libc::PTRACE_SYSCALL_INFO_ENTRY => {
-                        let entry = unsafe { &info.u.entry };
-                        let nr = Sysno::new(entry.nr as usize);
+                        let info_entry = unsafe { &info.u.entry };
+                        let nr = Sysno::new(info_entry.nr as usize);
 
                         let next_partial_syscall = if let Some(nr) = nr {
                             let res = match nr {
+                                // handle fork-like
                                 Sysno::clone | Sysno::fork | Sysno::vfork | Sysno::clone3 => SyscallEntry::Fork,
-                                Sysno::execve | Sysno::execveat => SyscallEntry::Exec,
+                                // handle exec-like, capture args now
+                                Sysno::execve => {
+                                    let args = ptrace_extract_exec_args(
+                                        pid,
+                                        info_entry.args[0],
+                                        info_entry.args[1],
+                                        info_entry.args[2],
+                                    )
+                                    .expect("failed to extract exec args");
+                                    SyscallEntry::Exec(args)
+                                }
+                                Sysno::execveat => {
+                                    let args = ptrace_extract_exec_args(
+                                        pid,
+                                        info_entry.args[1],
+                                        info_entry.args[2],
+                                        info_entry.args[3],
+                                    )
+                                    .expect("failed to extract exec args");
+                                    SyscallEntry::Exec(args)
+                                }
                                 // ignore exit syscalls, we'll record the actual exit on process termination
                                 Sysno::exit | Sysno::exit_group => SyscallEntry::Ignore,
                                 // ignore other syscalls, we're only interested in fork/exec
@@ -135,22 +156,32 @@ fn main() {
                         partial_syscalls.insert_first(pid, next_partial_syscall);
                     }
                     libc::PTRACE_SYSCALL_INFO_EXIT => {
+                        let info_exir = unsafe { &info.u.exit };
+
                         let partial = partial_syscalls.remove(&pid).unwrap_or(SyscallEntry::Ignore);
-
-                        let exit_info = unsafe { &info.u.exit };
-
                         match partial {
                             SyscallEntry::Ignore => {}
                             SyscallEntry::Fork => {
-                                // TODO record forked process pid
+                                if info_exir.sval > 0 {
+                                    let child_pid = Pid::from_raw(info_exir.sval as i32);
+                                    recording.processes.get_mut(&pid).unwrap().children.push(child_pid);
+                                }
                             }
-                            SyscallEntry::Exec => {
-                                // TODO record new process info (only if successful!)
+                            SyscallEntry::Exec(ref args) => {
+                                if info_exir.sval == 0 {
+                                    // TODO delay capturing args until we know exec succeeded?
+                                    let proc_exec = ProcessExec {
+                                        time: Instant::now(),
+                                        path: String::from_utf8_lossy(&args.path).into_owned(),
+                                        argv: vec![],
+                                    };
+                                    recording.processes.get_mut(&pid).unwrap().execs.push(proc_exec);
+                                }
                             }
                         }
 
                         if !matches!(partial, SyscallEntry::Ignore) {
-                            println!("[{pid}] syscall exit {:?} -> {}", partial, exit_info.sval);
+                            println!("[{pid}] syscall exit {:?} -> {}", partial, info_exir.sval);
                         }
                     }
                     _ => {}
@@ -208,7 +239,13 @@ fn main() {
 enum SyscallEntry {
     Ignore,
     Fork,
-    Exec,
+    Exec(ExecArgs),
+}
+
+#[derive(Debug)]
+struct ExecArgs {
+    path: Vec<u8>,
+    argv: Vec<Vec<u8>>,
 }
 
 /// Fixed version of ptrace::syscall_info.
@@ -228,6 +265,32 @@ fn ptrace_syscall_info(pid: Pid) -> Result<ptrace_syscall_info, Errno> {
     Errno::result(res)?;
     let info = unsafe { data.assume_init() };
     Ok(info)
+}
+
+fn ptrace_extract_exec_args(pid: Pid, path: u64, argv: u64, envp: u64) -> nix::Result<ExecArgs> {
+    let _ = envp;
+
+    let path = ptrace_read_str(pid, path as *mut _)?;
+
+    Ok(ExecArgs { path, argv: Vec::new() })
+}
+
+fn ptrace_read_str(pid: Pid, start: *mut libc::c_void) -> nix::Result<Vec<u8>> {
+    // TODO is there really no batch memory read?
+    // TODO limit max length?
+    let mut result = Vec::new();
+
+    for offset in 0isize.. {
+        let word = ptrace::read(pid, unsafe { start.offset(offset) })?;
+        for b in word.to_ne_bytes() {
+            if b == 0 {
+                return Ok(result);
+            }
+            result.push(b);
+        }
+    }
+
+    Ok(result)
 }
 
 fn errno_to_io(e: Errno) -> std::io::Error {

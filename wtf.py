@@ -145,7 +145,7 @@ def handle_strace_line(processes: Processes, s: str):
             processes.processes[pid].children.append(info)
 
         # process starting a binary
-        elif rest.startswith("execve(") or rest.startswith("execat("):
+        elif rest.startswith("execve(") or rest.startswith("execveat("):
             m = REGEX_EXEC.fullmatch(rest)
             cmd = ProcessCommand(
                 time=time,

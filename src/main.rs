@@ -4,7 +4,7 @@ use clap::Parser;
 use eframe::Frame;
 use egui::epaint::CornerRadiusF32;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
-use egui::{CentralPanel, Color32, Context, Pos2, Rect, ScrollArea};
+use egui::{CentralPanel, Color32, Context, Pos2, Rect, ScrollArea, Sense};
 use itertools::enumerate;
 use std::process::Command;
 use wtf::trace::{record_trace, Recording};
@@ -49,30 +49,30 @@ impl eframe::App for App {
         CentralPanel::default().show(ctx, |ui| {
             ScrollArea::both()
                 .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
-                .max_width(f32::INFINITY)
-                .max_height(f32::INFINITY)
                 .scroll_source(ScrollSource::SCROLL_BAR | ScrollSource::DRAG)
                 .show(ui, |ui| {
                     const W: f32 = 200.0;
                     const H: f32 = 20.0;
 
-                    let painter = ui.painter();
-                    let mut bounding_box = Rect::NOTHING;
+                    ui.take_available_space();
 
-                    for (i, proc) in enumerate(self.recording.processes.values()) {
+                    let proc_with_rect = enumerate(self.recording.processes.values()).map(|(i, proc)| {
                         let time_end = proc.time_end.unwrap_or(self.recording.time_last);
                         let rect = Rect {
                             min: Pos2::new(W * proc.time_start, H * (i as f32)),
                             max: Pos2::new(W * time_end, H * ((i + 1) as f32)),
                         };
-                        bounding_box |= rect;
+                        (proc, rect)
+                    });
 
+                    let bounding_box = proc_with_rect.clone().fold(Rect::NOTHING, |b, (_, r)| b | r);
+                    let (response, painter) = ui.allocate_painter(bounding_box.size(), Sense::empty());
+                    let offset = response.rect.min.to_vec2();
+
+                    for (_, rect) in proc_with_rect {
                         let color = Color32::from_gray(128);
-                        painter.rect_filled(rect, CornerRadiusF32::ZERO, color);
+                        painter.rect_filled(rect.translate(offset), CornerRadiusF32::ZERO, color);
                     }
-
-                    ui.allocate_space(bounding_box.size());
-                    ui.take_available_space();
                 });
         });
     }

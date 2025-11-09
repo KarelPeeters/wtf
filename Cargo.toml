@@ -5,5 +5,7 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.5.51", features = ["derive"] }
+index-map = "0.1.0"
+indexmap = "2.12.0"
 nix = { version = "0.30.1", features = ["ptrace", "signal"] }
 syscalls = "0.7.0"

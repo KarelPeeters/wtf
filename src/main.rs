@@ -1,6 +1,7 @@
 #![cfg(unix)]
 
 use clap::Parser;
+use indexmap::IndexMap;
 use nix::errno::Errno;
 use nix::libc;
 use nix::libc::ptrace_syscall_info;
@@ -10,12 +11,50 @@ use nix::unistd::Pid;
 use std::collections::HashMap;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
+use std::time::Instant;
 use syscalls::Sysno;
 
 #[derive(Debug, Parser)]
 struct Args {
     #[arg(trailing_var_arg = true, required = true, num_args = 1..)]
     command: Vec<String>,
+}
+
+#[derive(Debug)]
+struct Recording {
+    processes: IndexMap<Pid, ProcessInfo>,
+}
+
+#[derive(Debug)]
+struct ProcessInfo {
+    pid: Pid,
+    parent_pid: Option<Pid>,
+
+    time_start: Instant,
+    time_end: Option<Instant>,
+
+    execs: Vec<ProcessExec>,
+    children: Vec<Pid>,
+}
+
+#[derive(Debug)]
+struct ProcessExec {
+    time: Instant,
+    name: String,
+    argv: Vec<String>,
+}
+
+impl ProcessInfo {
+    pub fn new_start_now(pid: Pid, parent_pid: Option<Pid>) -> Self {
+        Self {
+            pid,
+            parent_pid,
+            time_start: Instant::now(),
+            time_end: None,
+            execs: Vec::new(),
+            children: Vec::new(),
+        }
+    }
 }
 
 // TODO proper error handling around command spawning
@@ -47,6 +86,14 @@ fn main() {
         | ptrace::Options::PTRACE_O_TRACEVFORK;
     ptrace::setoptions(root_pid, ptrace_options).expect("failed to set ptrace options");
 
+    // result data structure
+    let mut recording = Recording {
+        processes: IndexMap::new(),
+    };
+    recording
+        .processes
+        .insert_first(root_pid, ProcessInfo::new_start_now(root_pid, None));
+
     // track in-progress syscall per child
     let mut partial_syscalls: HashMap<Pid, SyscallEntry> = HashMap::new();
 
@@ -68,7 +115,9 @@ fn main() {
                             let res = match nr {
                                 Sysno::clone | Sysno::fork | Sysno::vfork | Sysno::clone3 => SyscallEntry::Fork,
                                 Sysno::execve | Sysno::execveat => SyscallEntry::Exec,
-                                Sysno::exit | Sysno::exit_group => SyscallEntry::Exit,
+                                // ignore exit syscalls, we'll record the actual exit on process termination
+                                Sysno::exit | Sysno::exit_group => SyscallEntry::Ignore,
+                                // ignore other syscalls, we're only interested in fork/exec
                                 _ => SyscallEntry::Ignore,
                             };
 
@@ -82,7 +131,7 @@ fn main() {
                             SyscallEntry::Ignore
                         };
 
-                        partial_syscalls.insert(pid, next_partial_syscall);
+                        partial_syscalls.insert_first(pid, next_partial_syscall);
                     }
                     libc::PTRACE_SYSCALL_INFO_EXIT => {
                         let partial = partial_syscalls.remove(&pid).unwrap_or(SyscallEntry::Ignore);
@@ -97,9 +146,6 @@ fn main() {
                             SyscallEntry::Exec => {
                                 // TODO record new process info (only if successful!)
                             }
-                            SyscallEntry::Exit => {
-                                // TODO record process exit
-                            }
                         }
 
                         if !matches!(partial, SyscallEntry::Ignore) {
@@ -112,31 +158,27 @@ fn main() {
                 Some(pid)
             }
             // handle event
-            WaitStatus::PtraceEvent(pid, signal, extra) => {
-                // TODO maybe we can just ignore this, just setting the flags is already enough to follow
-                // note: these don't necessarily correspond to the original syscalls, depending on the flags
-                let event_kind = match extra {
-                    libc::PTRACE_EVENT_FORK => Some("fork"),
-                    libc::PTRACE_EVENT_VFORK => Some("vfork"),
-                    libc::PTRACE_EVENT_CLONE => Some("clone"),
-                    _ => None,
-                };
-                println!("[{pid}] ptrace event: signal={signal:?} extra={extra} {event_kind:?}");
+            WaitStatus::PtraceEvent(pid, _signal, event) => {
+                match event {
+                    // handle fork-like events at the start of the child process
+                    // note: these don't necessarily correspond to exact original syscall, depending on the flags
+                    libc::PTRACE_EVENT_FORK | libc::PTRACE_EVENT_VFORK | libc::PTRACE_EVENT_CLONE => {
+                        let child_pid = ptrace::getevent(pid).expect("ptrace::getevent failed");
+                        let child_pid = Pid::from_raw(child_pid as i32);
 
-                // Get the new child PID
-                if matches!(
-                    extra,
-                    libc::PTRACE_EVENT_FORK | libc::PTRACE_EVENT_VFORK | libc::PTRACE_EVENT_CLONE
-                ) {
-                    let new_pid = ptrace::getevent(pid).expect("ptrace::getevent failed");
-                    let new_child_pid = Pid::from_raw(new_pid as i32);
-                    println!("New child process: {new_child_pid}");
+                        recording
+                            .processes
+                            .insert_first(child_pid, ProcessInfo::new_start_now(child_pid, Some(pid)));
+                    }
+                    // ignore other events
+                    _ => {}
                 }
 
                 Some(pid)
             }
-            // processes exited, cleanup and maybe stop tracing
+            // process exited, cleanup and maybe stop tracing
             WaitStatus::Exited(pid, _) | WaitStatus::Signaled(pid, _, _) => {
+                recording.processes.get_mut(&pid).unwrap().time_end = Some(Instant::now());
                 partial_syscalls.remove(&pid);
                 if pid == root_pid {
                     break;
@@ -154,6 +196,11 @@ fn main() {
             ptrace::syscall(resume_pid, None).expect("failed ptrace::syscall");
         }
     }
+
+    println!("Recording complete:");
+    for info in recording.processes.values() {
+        println!("  {:?}", info);
+    }
 }
 
 #[derive(Debug)]
@@ -161,7 +208,6 @@ enum SyscallEntry {
     Ignore,
     Fork,
     Exec,
-    Exit,
 }
 
 /// Fixed version of ptrace::syscall_info.
@@ -185,4 +231,28 @@ fn ptrace_syscall_info(pid: Pid) -> Result<ptrace_syscall_info, Errno> {
 
 fn errno_to_io(e: Errno) -> std::io::Error {
     std::io::Error::from_raw_os_error(e as i32)
+}
+
+trait MapExt<K, V> {
+    fn insert_first(&mut self, key: K, value: V);
+}
+
+impl<K, V> MapExt<K, V> for IndexMap<K, V>
+where
+    K: std::hash::Hash + Eq,
+{
+    fn insert_first(&mut self, key: K, value: V) {
+        let prev = self.insert(key, value);
+        assert!(prev.is_none());
+    }
+}
+
+impl<K, V> MapExt<K, V> for HashMap<K, V>
+where
+    K: std::hash::Hash + Eq,
+{
+    fn insert_first(&mut self, key: K, value: V) {
+        let prev = self.insert(key, value);
+        assert!(prev.is_none());
+    }
 }

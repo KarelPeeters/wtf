@@ -116,25 +116,25 @@ fn main() {
                             let res = match nr {
                                 // handle fork-like
                                 Sysno::clone | Sysno::fork | Sysno::vfork | Sysno::clone3 => SyscallEntry::Fork,
-                                // handle exec-like, capture args now
+                                // handle exec-like
                                 Sysno::execve => {
-                                    let args = ptrace_extract_exec_args(
-                                        pid,
-                                        info_entry.args[0],
-                                        info_entry.args[1],
-                                        info_entry.args[2],
-                                    )
-                                    .expect("failed to extract exec args");
+                                    let args_ptr = ExecArgPointers {
+                                        path: info_entry.args[0],
+                                        argv: info_entry.args[1],
+                                        envp: info_entry.args[2],
+                                    };
+                                    let args =
+                                        ptrace_extract_exec_args(pid, args_ptr).expect("failed to extract exec args");
                                     SyscallEntry::Exec(args)
                                 }
                                 Sysno::execveat => {
-                                    let args = ptrace_extract_exec_args(
-                                        pid,
-                                        info_entry.args[1],
-                                        info_entry.args[2],
-                                        info_entry.args[3],
-                                    )
-                                    .expect("failed to extract exec args");
+                                    let args_ptr = ExecArgPointers {
+                                        path: info_entry.args[1],
+                                        argv: info_entry.args[2],
+                                        envp: info_entry.args[3],
+                                    };
+                                    let args =
+                                        ptrace_extract_exec_args(pid, args_ptr).expect("failed to extract exec args");
                                     SyscallEntry::Exec(args)
                                 }
                                 // ignore exit syscalls, we'll record the actual exit on process termination
@@ -169,7 +169,6 @@ fn main() {
                             }
                             SyscallEntry::Exec(ref args) => {
                                 if info_exir.sval == 0 {
-                                    // TODO delay capturing args until we know exec succeeded?
                                     let proc_exec = ProcessExec {
                                         time: Instant::now(),
                                         path: String::from_utf8_lossy(&args.path).into_owned(),
@@ -242,6 +241,13 @@ enum SyscallEntry {
     Exec(ExecArgs),
 }
 
+#[derive(Debug, Copy, Clone)]
+struct ExecArgPointers {
+    path: u64,
+    argv: u64,
+    envp: u64,
+}
+
 #[derive(Debug)]
 struct ExecArgs {
     path: Vec<u8>,
@@ -267,8 +273,8 @@ fn ptrace_syscall_info(pid: Pid) -> Result<ptrace_syscall_info, Errno> {
     Ok(info)
 }
 
-fn ptrace_extract_exec_args(pid: Pid, path: u64, argv: u64, envp: u64) -> nix::Result<ExecArgs> {
-    let _ = envp;
+fn ptrace_extract_exec_args(pid: Pid, args: ExecArgPointers) -> nix::Result<ExecArgs> {
+    let ExecArgPointers { path, argv: _, envp: _ } = args;
 
     let path = ptrace_read_str(pid, path as *mut _)?;
 

@@ -40,10 +40,11 @@ fn main() {
     // * PTRACE_O_TRACESYSGOOD: add mask to syscall stops, allows parsing WaitStatus::PtraceSyscall
     // * PTRACE_O_EXITKILL: kill traced process if tracer exits to avoid orphaned processes
     // * PTRACE_O_TRACE*: trace children through fork syscalls?
-    let ptrace_options = ptrace::Options::PTRACE_O_TRACESYSGOOD | ptrace::Options::PTRACE_O_EXITKILL;
-    // | ptrace::Options::PTRACE_O_TRACEFORK
-    // | ptrace::Options::PTRACE_O_TRACEVFORK
-    // | ptrace::Options::PTRACE_O_TRACECLONE;
+    let ptrace_options = ptrace::Options::PTRACE_O_TRACESYSGOOD
+        | ptrace::Options::PTRACE_O_EXITKILL
+        | ptrace::Options::PTRACE_O_TRACECLONE
+        | ptrace::Options::PTRACE_O_TRACEFORK
+        | ptrace::Options::PTRACE_O_TRACEVFORK;
     ptrace::setoptions(child_pid, ptrace_options).expect("failed to set ptrace options");
 
     let mut partial_syscall = None;
@@ -61,8 +62,6 @@ fn main() {
             WaitStatus::PtraceSyscall(pid) => {
                 let info = ptrace_syscall_info(pid).expect("failed ptrace::syscall_info");
 
-                println!("syscall {pid} {:?}", info);
-
                 match info.op {
                     libc::PTRACE_SYSCALL_INFO_ENTRY => {
                         assert!(partial_syscall.is_none());
@@ -71,18 +70,22 @@ fn main() {
                         let nr = Sysno::new(entry.nr as usize);
 
                         let next_partial_syscall = if let Some(nr) = nr {
-                            match nr {
+                            let res = match nr {
                                 Sysno::clone | Sysno::fork | Sysno::vfork | Sysno::clone3 => SyscallEntry::Fork,
                                 Sysno::execve | Sysno::execveat => SyscallEntry::Exec,
                                 Sysno::exit | Sysno::exit_group => SyscallEntry::Exit,
                                 _ => SyscallEntry::Ignore,
+                            };
+
+                            if !matches!(res, SyscallEntry::Ignore) {
+                                println!("syscall entry {nr:?}");
                             }
+
+                            res
                         } else {
                             // ignore unknown syscalls
                             SyscallEntry::Ignore
                         };
-
-                        println!("  entry {:?}", nr);
 
                         partial_syscall = Some(next_partial_syscall);
                     }
@@ -104,7 +107,9 @@ fn main() {
                             }
                         }
 
-                        println!("  exit {}", entry.sval);
+                        if !matches!(partial, SyscallEntry::Ignore) {
+                            println!("syscall exit {:?} -> {}", partial, entry.sval);
+                        }
                     }
                     _ => {}
                 }
@@ -113,7 +118,14 @@ fn main() {
             WaitStatus::Signaled(_, _, _) => todo!(),
             WaitStatus::Stopped(_, _) => {}
             WaitStatus::PtraceEvent(pid, signal, extra) => {
-                println!("ptrace event: pid={pid} signal={signal:?} extra={extra}");
+                // note: these don't necessarily correspond to the original syscalls, depending on the flags
+                let event_kind = match extra {
+                    libc::PTRACE_EVENT_FORK => Some("fork"),
+                    libc::PTRACE_EVENT_VFORK => Some("vfork"),
+                    libc::PTRACE_EVENT_CLONE => Some("clone"),
+                    _ => None,
+                };
+                println!("ptrace event: pid={pid} signal={signal:?} extra={extra} {event_kind:?}");
             }
             WaitStatus::Continued(_) => todo!(),
             WaitStatus::StillAlive => todo!(),
@@ -121,6 +133,7 @@ fn main() {
     }
 }
 
+#[derive(Debug)]
 enum SyscallEntry {
     Ignore,
     Fork,

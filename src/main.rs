@@ -113,6 +113,7 @@ fn main() {
             }
             // handle event
             WaitStatus::PtraceEvent(pid, signal, extra) => {
+                // TODO maybe we can just ignore this, just setting the flags is already enough to follow
                 // note: these don't necessarily correspond to the original syscalls, depending on the flags
                 let event_kind = match extra {
                     libc::PTRACE_EVENT_FORK => Some("fork"),
@@ -120,22 +121,16 @@ fn main() {
                     libc::PTRACE_EVENT_CLONE => Some("clone"),
                     _ => None,
                 };
-                println!("ptrace event: pid={pid} signal={signal:?} extra={extra} {event_kind:?}");
+                println!("[{pid}] ptrace event: signal={signal:?} extra={extra} {event_kind:?}");
 
                 // Get the new child PID
                 if matches!(
                     extra,
                     libc::PTRACE_EVENT_FORK | libc::PTRACE_EVENT_VFORK | libc::PTRACE_EVENT_CLONE
                 ) {
-                    match ptrace::getevent(pid) {
-                        Ok(new_pid) => {
-                            let new_child_pid = Pid::from_raw(new_pid as i32);
-                            println!("New child process: {new_child_pid}");
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to get new child pid: {e}");
-                        }
-                    }
+                    let new_pid = ptrace::getevent(pid).expect("ptrace::getevent failed");
+                    let new_child_pid = Pid::from_raw(new_pid as i32);
+                    println!("New child process: {new_child_pid}");
                 }
 
                 Some(pid)

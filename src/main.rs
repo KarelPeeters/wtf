@@ -5,10 +5,10 @@ use eframe::Frame;
 use egui::epaint::CornerRadiusF32;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
 use egui::{CentralPanel, Color32, Context, FontId, Pos2, Rect, ScrollArea, Sense};
-use itertools::enumerate;
-use std::iter::zip;
+use std::ops::RangeInclusive;
 use std::process::Command;
-use wtf::trace::{record_trace, ProcessInfo, Recording};
+use wtf::layout::{place_processes, PlacedProcess};
+use wtf::trace::{record_trace, Recording};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -22,17 +22,19 @@ fn main() {
 
     let mut cmd = Command::new(&args.command[0]);
     cmd.args(&args.command[1..]);
-    let rec = record_trace(cmd);
+    let recording = record_trace(cmd);
 
     println!("Recording complete:");
-    for info in rec.processes.values() {
+    for info in recording.processes.values() {
         println!("  {:?}", info);
     }
 
-    main_gui(rec).expect("GUI failed");
+    let placed = place_processes(&recording);
+
+    main_gui(recording, placed).expect("GUI failed");
 }
 
-fn main_gui(recording: Recording) -> eframe::Result<()> {
+fn main_gui(recording: Recording, placed: PlacedProcess) -> eframe::Result<()> {
     // TODO add icon
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([400.0, 300.0]),
@@ -41,9 +43,10 @@ fn main_gui(recording: Recording) -> eframe::Result<()> {
     eframe::run_native(
         "wtf",
         native_options,
-        Box::new(|cc| {
+        Box::new(|_| {
             Ok(Box::new(App {
                 recording,
+                placed,
                 zoom_linear: 0.0,
             }))
         }),
@@ -52,11 +55,13 @@ fn main_gui(recording: Recording) -> eframe::Result<()> {
 
 struct App {
     recording: Recording,
+    placed: PlacedProcess,
+
     zoom_linear: f32,
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &Context, frame: &mut Frame) {
+    fn update(&mut self, ctx: &Context, _: &mut Frame) {
         CentralPanel::default().show(ctx, |ui| {
             ScrollArea::both()
                 .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
@@ -65,37 +70,54 @@ impl eframe::App for App {
                     ui.take_available_space();
 
                     // first pass: compute bounding box and prepare text
+                    let text_color = ui.visuals().text_color();
                     let mut bounding_box = Rect::NOTHING;
                     let mut galleys = vec![];
-                    let text_color = ui.visuals().text_color();
 
-                    for (i, proc) in enumerate(self.recording.processes.values()) {
-                        let proc_rect = self.proc_rect(i, proc);
+                    self.placed.visit(&mut |placed| {
+                        let proc = self.recording.processes.get(&placed.pid).unwrap();
+
+                        let proc_rect = self.proc_rect(placed.row, placed.height, placed.time_bound.clone());
                         bounding_box |= proc_rect;
 
+                        // TODO skip text layout if out of bounds
+                        // TODO skip if text does not fit in rect
+                        //   (that also allows us to skip the bound calculation here entirely!)
                         let text = proc.execs.first().map(|exec| exec.path.as_str()).unwrap_or("?");
                         let galley = ui
                             .painter()
                             .layout_no_wrap(text.to_owned(), FontId::default(), text_color);
                         bounding_box |= galley.rect.translate(proc_rect.min.to_vec2());
                         galleys.push(galley);
-                    }
+                    });
 
                     // allocate space and create painter
                     let (response, painter) = ui.allocate_painter(bounding_box.size(), Sense::empty());
                     let offset = response.rect.min.to_vec2();
+                    let mut galleys = galleys.into_iter();
 
                     // second pass: actually paint
-                    for (i, (proc, galley)) in enumerate(zip(self.recording.processes.values(), galleys)) {
-                        let proc_rect = self.proc_rect(i, proc);
+                    // TODO keep animating this while the process is still running?
+                    let time_bound_end = *self.placed.time_bound.end();
+                    self.placed.visit(&mut |placed| {
+                        let proc = self.recording.processes.get(&placed.pid).unwrap();
+                        let proc_time = proc.time_start..=proc.time_end.unwrap_or(time_bound_end);
 
-                        let color = Color32::from_gray(80);
-                        painter.rect_filled(proc_rect.translate(offset), CornerRadiusF32::ZERO, color);
+                        let proc_rect_header = self.proc_rect(placed.row, 1, proc_time.clone()).translate(offset);
+                        let proc_rect_full = self.proc_rect(placed.row, placed.height, proc_time).translate(offset);
 
-                        painter.galley(proc_rect.min + offset, galley, text_color);
-                    }
+                        // TODO better coloring
+                        // TODO stroke around all children?
+                        let color = Color32::from_gray(40 + (placed.depth as u8) * 30);
+                        painter.rect_filled(proc_rect_full, CornerRadiusF32::ZERO, color);
+                        // painter.rect_stroke(proc_rect_full, CornerRadiusF32::ZERO, (1.0, color), StrokeKind::Inside);
+
+                        let galley = galleys.next().unwrap();
+                        painter.galley(proc_rect_header.min, galley, text_color);
+                    });
 
                     // handle zoom events
+                    // TODO can/should we move this earlier?
                     if ui.is_enabled() && ui.rect_contains_pointer(ui.min_rect()) {
                         let delta = ui.input(|input| input.raw_scroll_delta);
                         self.zoom_linear += delta.y;
@@ -106,15 +128,14 @@ impl eframe::App for App {
 }
 
 impl App {
-    fn proc_rect(&self, i: usize, proc: &ProcessInfo) -> Rect {
+    // TODO flip y axis
+    fn proc_rect(&self, row: usize, height: usize, time: RangeInclusive<f32>) -> Rect {
         let h = 20.0;
         let w = 200.0 * (self.zoom_linear / 100.0).exp();
 
-        let time_end = proc.time_end.unwrap_or(self.recording.time_last);
-
         Rect {
-            min: Pos2::new(w * proc.time_start, h * (i as f32)),
-            max: Pos2::new(w * time_end, h * ((i + 1) as f32)),
+            min: Pos2::new(w * time.start(), h * (row as f32)),
+            max: Pos2::new(w * time.end(), h * ((row + height) as f32)),
         }
     }
 }

@@ -299,7 +299,6 @@ def place_process(processes: Processes, parent: ProcessInfo) -> PlacedProcess:
         # handle process ends (do this first to allow immediate reuse of space)
         for proc in procs_end:
             placed = process_running.pop(proc.pid)
-            placed_children.append(placed)
             free.release(placed.offset, placed.height)
 
         # handle process starts

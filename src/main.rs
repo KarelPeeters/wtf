@@ -5,6 +5,7 @@ use indexmap::IndexMap;
 use nix::errno::Errno;
 use nix::libc;
 use nix::libc::ptrace_syscall_info;
+use nix::sys::signal::SIGSTOP;
 use nix::sys::wait::WaitStatus;
 use nix::sys::{ptrace, wait};
 use nix::unistd::Pid;
@@ -29,12 +30,13 @@ struct Recording {
 #[derive(Debug)]
 struct ProcessInfo {
     pid: Pid,
-    parent_pid: Option<Pid>,
 
     time_start: Instant,
     time_end: Option<Instant>,
 
     execs: Vec<ProcessExec>,
+
+    // note: children might be reported here before they actually exist as ProcessInfo entries
     children: Vec<Pid>,
 }
 
@@ -46,10 +48,9 @@ struct ProcessExec {
 }
 
 impl ProcessInfo {
-    pub fn new_start_now(pid: Pid, parent_pid: Option<Pid>) -> Self {
+    pub fn new_start_now(pid: Pid) -> Self {
         Self {
             pid,
-            parent_pid,
             time_start: Instant::now(),
             time_end: None,
             execs: Vec::new(),
@@ -93,7 +94,7 @@ fn main() {
     };
     recording
         .processes
-        .insert_first(root_pid, ProcessInfo::new_start_now(root_pid, None));
+        .insert_first(root_pid, ProcessInfo::new_start_now(root_pid));
 
     // track in-progress syscall per child
     let mut partial_syscalls: HashMap<Pid, SyscallEntry> = HashMap::new();
@@ -162,12 +163,14 @@ fn main() {
                         match partial {
                             SyscallEntry::Ignore => {}
                             SyscallEntry::Fork => {
+                                println!("[{pid}] syscall exit fork-like");
                                 if info_exir.sval > 0 {
                                     let child_pid = Pid::from_raw(info_exir.sval as i32);
                                     recording.processes.get_mut(&pid).unwrap().children.push(child_pid);
                                 }
                             }
                             SyscallEntry::Exec(ref args) => {
+                                println!("[{pid}] syscall exit exec-like");
                                 if info_exir.sval == 0 {
                                     let proc_exec = ProcessExec {
                                         time: Instant::now(),
@@ -178,35 +181,16 @@ fn main() {
                                 }
                             }
                         }
-
-                        if !matches!(partial, SyscallEntry::Ignore) {
-                            println!("[{pid}] syscall exit {:?} -> {}", partial, info_exir.sval);
-                        }
                     }
                     _ => {}
                 }
 
                 Some(pid)
             }
-            // handle event
-            WaitStatus::PtraceEvent(pid, _signal, event) => {
-                match event {
-                    // handle fork-like events at the start of the child process
-                    // note: these don't necessarily correspond to exact original syscall, depending on the flags
-                    libc::PTRACE_EVENT_FORK | libc::PTRACE_EVENT_VFORK | libc::PTRACE_EVENT_CLONE => {
-                        let child_pid = ptrace::getevent(pid).expect("ptrace::getevent failed");
-                        let child_pid = Pid::from_raw(child_pid as i32);
-
-                        recording
-                            .processes
-                            .insert_first(child_pid, ProcessInfo::new_start_now(child_pid, Some(pid)));
-                    }
-                    // ignore other events
-                    _ => {}
-                }
-
-                Some(pid)
-            }
+            // ignore events
+            //    these get reported for the parent process when children are created due to the ptrace options,
+            //    but we don't care about them
+            WaitStatus::PtraceEvent(pid, _signal, _event) => Some(pid),
             // process exited, cleanup and maybe stop tracing
             WaitStatus::Exited(pid, _) | WaitStatus::Signaled(pid, _, _) => {
                 recording.processes.get_mut(&pid).unwrap().time_end = Some(Instant::now());
@@ -217,7 +201,14 @@ fn main() {
                 None
             }
             // stopped by some signal, just continue
-            WaitStatus::Stopped(pid, _signal) => Some(pid),
+            WaitStatus::Stopped(pid, signal) => {
+                if signal == SIGSTOP && !recording.processes.contains_key(&pid) {
+                    // initial stop for new child process, create it
+                    recording.processes.insert_first(pid, ProcessInfo::new_start_now(pid));
+                }
+
+                Some(pid)
+            }
             // cases that shouldn't happen
             WaitStatus::Continued(_) => unreachable!("we didn't set WaitPidFlag::WCONTINUE"),
             WaitStatus::StillAlive => unreachable!("we didn't set WaitPidFlag::WNOHANG"),

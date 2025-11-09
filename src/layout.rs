@@ -14,8 +14,11 @@ pub struct PlacedProcess {
     pub row: usize,
     pub height: usize,
 
-    pub time_bound: RangeInclusive<f32>,
     pub children: Vec<PlacedProcess>,
+    
+    // bounds
+    pub max_depth: usize,
+    pub time_bound: RangeInclusive<f32>,
 }
 
 pub fn place_processes(rec: &Recording) -> PlacedProcess {
@@ -57,6 +60,7 @@ fn place_process(rec: &Recording, cache: &mut TimeCache, pid: Pid, depth: usize)
     let mut free = FreeList::new();
     let mut children_active: IndexMap<Pid, Range<usize>> = IndexMap::new();
     let mut placed_children = vec![];
+    let mut max_depth = depth;
 
     for (children_start, children_end) in sorted_events {
         // handle child ends (first to allow immediately reusing rows)
@@ -69,6 +73,8 @@ fn place_process(rec: &Recording, cache: &mut TimeCache, pid: Pid, depth: usize)
         for child in children_start {
             let mut child_placed = place_process(rec, cache, child, depth+1);
             assert_eq!(child_placed.row, 0);
+            
+            max_depth = max_depth.max(child_placed.max_depth);
 
             let row = free.allocate(child_placed.height);
             child_placed.row = row;
@@ -83,8 +89,9 @@ fn place_process(rec: &Recording, cache: &mut TimeCache, pid: Pid, depth: usize)
         depth,
         row: 0,
         height: 1 + free.len(),
-        time_bound: process_time_bound(rec, cache, pid),
         children: placed_children,
+        max_depth,
+        time_bound: process_time_bound(rec, cache, pid),
     }
 }
 

@@ -108,7 +108,8 @@ impl eframe::App for App {
 
                         // TODO better coloring
                         // TODO stroke around all children?
-                        let color = Color32::from_gray(40 + (placed.depth as u8) * 30);
+                        let color_scale = placed.depth as f32 / self.placed.max_depth as f32;
+                        let color = Color32::from_gray((20.0 + (80.0 * color_scale)) as u8);
                         painter.rect_filled(proc_rect_full, CornerRadiusF32::ZERO, color);
                         // painter.rect_stroke(proc_rect_full, CornerRadiusF32::ZERO, (1.0, color), StrokeKind::Inside);
 
@@ -118,6 +119,7 @@ impl eframe::App for App {
 
                     // handle zoom events
                     // TODO can/should we move this earlier?
+                    // TODO keep mouse position stable when zooming
                     if ui.is_enabled() && ui.rect_contains_pointer(ui.min_rect()) {
                         let delta = ui.input(|input| input.raw_scroll_delta);
                         self.zoom_linear += delta.y;

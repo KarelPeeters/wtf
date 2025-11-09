@@ -13,6 +13,7 @@ use std::os::unix::process::CommandExt;
 use std::process::Command;
 use std::time::Instant;
 use syscalls::Sysno;
+use wtf::util::MapExt;
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -231,28 +232,4 @@ fn ptrace_syscall_info(pid: Pid) -> Result<ptrace_syscall_info, Errno> {
 
 fn errno_to_io(e: Errno) -> std::io::Error {
     std::io::Error::from_raw_os_error(e as i32)
-}
-
-trait MapExt<K, V> {
-    fn insert_first(&mut self, key: K, value: V);
-}
-
-impl<K, V> MapExt<K, V> for IndexMap<K, V>
-where
-    K: std::hash::Hash + Eq,
-{
-    fn insert_first(&mut self, key: K, value: V) {
-        let prev = self.insert(key, value);
-        assert!(prev.is_none());
-    }
-}
-
-impl<K, V> MapExt<K, V> for HashMap<K, V>
-where
-    K: std::hash::Hash + Eq,
-{
-    fn insert_first(&mut self, key: K, value: V) {
-        let prev = self.insert(key, value);
-        assert!(prev.is_none());
-    }
 }

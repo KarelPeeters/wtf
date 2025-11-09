@@ -69,42 +69,30 @@ impl eframe::App for App {
                 .show(ui, |ui| {
                     ui.take_available_space();
 
-                    // first pass: compute bounding box and prepare text
-                    let text_color = ui.visuals().text_color();
+                    // first pass: compute bounding box
                     let mut bounding_box = Rect::NOTHING;
-                    let mut galleys = vec![];
-
                     self.placed.visit(&mut |placed, row| {
-                        let proc = self.recording.processes.get(&placed.pid).unwrap();
-
                         let proc_rect = self.proc_rect(row, placed.row_height, placed.time_bound.clone());
                         bounding_box |= proc_rect;
-
-                        // TODO skip text layout if out of bounds
-                        // TODO skip if text does not fit in rect
-                        //   (that also allows us to skip the bound calculation here entirely!)
-                        let text = proc.execs.first().map(|exec| exec.path.as_str()).unwrap_or("?");
-                        let galley = ui
-                            .painter()
-                            .layout_no_wrap(text.to_owned(), FontId::default(), text_color);
-                        bounding_box |= galley.rect.translate(proc_rect.min.to_vec2());
-                        galleys.push(galley);
                     });
 
                     // allocate space and create painter
                     let (response, painter) = ui.allocate_painter(bounding_box.size(), Sense::empty());
                     let offset = response.rect.min.to_vec2();
-                    let mut galleys = galleys.into_iter();
 
                     // second pass: actually paint
                     // TODO keep animating this while the process is still running?
+                    let text_color = ui.visuals().text_color();
                     let time_bound_end = *self.placed.time_bound.end();
                     self.placed.visit(&mut |placed, row| {
                         let proc = self.recording.processes.get(&placed.pid).unwrap();
                         let proc_time = proc.time_start..=proc.time_end.unwrap_or(time_bound_end);
 
+                        // TODO draw header and background in separate colors
                         let proc_rect_header = self.proc_rect(row, 1, proc_time.clone()).translate(offset);
-                        let proc_rect_full = self.proc_rect(row, placed.row_height, proc_time).translate(offset);
+                        let proc_rect_full = self
+                            .proc_rect(row, placed.row_height, placed.time_bound.clone())
+                            .translate(offset);
 
                         // TODO better coloring
                         // TODO stroke around all children?
@@ -118,8 +106,15 @@ impl eframe::App for App {
                             StrokeKind::Inside,
                         );
 
-                        let galley = galleys.next().unwrap();
-                        painter.galley(proc_rect_header.min, galley, text_color);
+                        let text = proc.execs.first().map(|exec| exec.path.as_str()).unwrap_or("?");
+                        let text = text.rsplit_once("/").map(|(_, s)| s).unwrap_or(text);
+
+                        let galley = painter.layout_no_wrap(text.to_owned(), FontId::default(), text_color);
+
+                        let text_rect = galley.rect.translate(proc_rect_header.min.to_vec2());
+                        if proc_rect_header.contains_rect(text_rect) {
+                            painter.galley(proc_rect_header.min, galley, text_color);
+                        }
                     });
 
                     // handle zoom events

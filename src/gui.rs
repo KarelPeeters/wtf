@@ -72,50 +72,9 @@ impl eframe::App for App {
         }
 
         SidePanel::right("side_panel").show(ctx, |ui| {
-            let mut text = String::new();
+            ui.take_available_space();
 
-            if let Some(selected_pid) = self.selected_pid {
-                const I: &str = "    ";
-                swriteln!(text, "Selected process:");
-                swriteln!(text, "{I}pid: {}", selected_pid);
-
-                if let Some(data) = &self.data {
-                    if let Some(info) = data.recording.processes.get(&selected_pid) {
-                        let mut child_count_processes = 0;
-                        let mut child_count_threads = 0;
-                        for &(kind, _) in &info.children {
-                            match kind {
-                                ProcessKind::Process => child_count_processes += 1,
-                                ProcessKind::Thread => child_count_threads += 1,
-                            }
-                        }
-
-                        swriteln!(text, "{I}time_start: {}", info.time_start);
-                        swriteln!(text, "{I}time_end: {:?}", info.time_end);
-                        let duration = info.time_end.map(|time_end| time_end - info.time_start);
-                        swriteln!(text, "{I}duration: {:?}", duration);
-
-                        swriteln!(text, "{I}children: {}", child_count_processes);
-                        swriteln!(text, "{I}threads: {}", child_count_threads);
-
-                        swriteln!(text, "execs: {}", info.execs.len());
-
-                        for exec in &info.execs {
-                            swriteln!(text, "{I}{I}time: {}", exec.time);
-                            swriteln!(text, "{I}{I}path: {}", exec.path);
-
-                            swriteln!(text, "{I}{I}argv:");
-                            for arg in &exec.argv {
-                                swriteln!(text, "{I}{I}{I}{}", arg);
-                            }
-                        }
-                    }
-                }
-            } else {
-                swriteln!(text, "No process selected");
-            }
-
-            ui.label(text);
+            ui.label(self.selected_pid_info());
         });
 
         CentralPanel::default().show(ctx, |ui| {
@@ -216,5 +175,50 @@ impl App {
         });
 
         last_clicked_pid
+    }
+
+    fn selected_pid_info(&self) -> String {
+        let mut text = String::new();
+        if let Some(selected_pid) = self.selected_pid {
+            const I: &str = "    ";
+            swriteln!(text, "Selected process:");
+            swriteln!(text, "{I}pid: {}", selected_pid);
+
+            if let Some(data) = &self.data {
+                if let Some(info) = data.recording.processes.get(&selected_pid) {
+                    let mut child_count_processes = 0;
+                    let mut child_count_threads = 0;
+                    for &(kind, _) in &info.children {
+                        match kind {
+                            ProcessKind::Process => child_count_processes += 1,
+                            ProcessKind::Thread => child_count_threads += 1,
+                        }
+                    }
+
+                    swriteln!(text, "{I}time_start: {}", info.time_start);
+                    swriteln!(text, "{I}time_end: {:?}", info.time_end);
+                    let duration = info.time_end.map(|time_end| time_end - info.time_start);
+                    swriteln!(text, "{I}duration: {:?}", duration);
+
+                    swriteln!(text, "{I}children: {}", child_count_processes);
+                    swriteln!(text, "{I}threads: {}", child_count_threads);
+
+                    swriteln!(text, "execs: {}", info.execs.len());
+
+                    for exec in &info.execs {
+                        swriteln!(text, "{I}{I}time: {}", exec.time);
+                        swriteln!(text, "{I}{I}path: {}", exec.path);
+
+                        swriteln!(text, "{I}{I}argv:");
+                        for arg in &exec.argv {
+                            swriteln!(text, "{I}{I}{I}{}", arg);
+                        }
+                    }
+                }
+            }
+        } else {
+            swriteln!(text, "No process selected");
+        }
+        text
     }
 }

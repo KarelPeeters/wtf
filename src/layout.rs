@@ -1,7 +1,7 @@
-use crate::trace::{ProcessExec, ProcessInfo, Recording};
+use crate::trace::{ProcessExec, ProcessInfo, ProcessKind, Recording};
 use crate::util::MapExt;
 use indexmap::IndexMap;
-use itertools::Itertools;
+use itertools::{Either, Itertools};
 use nix::unistd::Pid;
 use ordered_float::OrderedFloat;
 use std::cmp::min;
@@ -21,10 +21,10 @@ pub struct PlacedProcess {
     pub time_bound: RangeInclusive<f32>,
 }
 
-pub fn place_processes(rec: &Recording) -> PlacedProcess {
+pub fn place_processes(rec: &Recording, include_threads: bool) -> PlacedProcess {
     // TODO what about orphans?
     let mut cache = TimeCache::new();
-    place_process(rec, &mut cache, rec.root_pid, 0)
+    place_process(rec, include_threads, &mut cache, rec.root_pid, 0)
 }
 
 impl PlacedProcess {
@@ -41,12 +41,34 @@ impl PlacedProcess {
     }
 }
 
-fn place_process(rec: &Recording, cache: &mut TimeCache, pid: Pid, depth: usize) -> PlacedProcess {
-    let info = rec.processes.get(&pid).unwrap();
+fn place_process(
+    rec: &Recording,
+    include_threads: bool,
+    cache: &mut TimeCache,
+    pid: Pid,
+    depth: usize,
+) -> PlacedProcess {
+    // filter/flatten children
+    let children = if include_threads {
+        let info = rec.processes.get(&pid).unwrap();
+        Either::Left(info.children.iter().map(|&(_, c)| c))
+    } else {
+        let mut children = vec![];
+        fn f(rec: &Recording, children: &mut Vec<Pid>, pid: Pid) {
+            for &(child_kind, child_pid) in &rec.processes.get(&pid).unwrap().children {
+                match child_kind {
+                    ProcessKind::Process => children.push(child_pid),
+                    ProcessKind::Thread => f(rec, children, child_pid),
+                }
+            }
+        }
+        f(rec, &mut children, pid);
+        Either::Right(children.into_iter())
+    };
 
     // collect all relevant time points and the processes that start/end that happen at those times
     let mut time_to_events: IndexMap<OrderedFloat<f32>, (Vec<Pid>, Vec<Pid>)> = IndexMap::new();
-    for &c in &info.children {
+    for c in children {
         let cb = process_time_bound(rec, cache, c);
         if cb.start() == cb.end() {
             // TODO can we leave these in? they're tricky because they start and stop in the same cycle
@@ -76,7 +98,7 @@ fn place_process(rec: &Recording, cache: &mut TimeCache, pid: Pid, depth: usize)
 
         // handle child starts
         for child in children_start {
-            let mut child_placed = place_process(rec, cache, child, depth + 1);
+            let mut child_placed = place_process(rec, include_threads, cache, child, depth + 1);
             assert_eq!(child_placed.row_offset, 0);
 
             max_depth = max_depth.max(child_placed.max_depth);
@@ -112,7 +134,7 @@ fn process_time_bound(rec: &Recording, cache: &mut TimeCache, pid: Pid) -> Range
     let mut bound_max = f32::MIN;
 
     let info = rec.processes.get(&pid).unwrap();
-    for &c in &info.children {
+    for &(_, c) in &info.children {
         let c_bound = process_time_bound(rec, cache, c);
         bound_min = bound_min.min(*c_bound.start());
         bound_max = bound_max.max(*c_bound.end());

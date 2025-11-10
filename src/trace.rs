@@ -28,7 +28,13 @@ pub struct ProcessInfo {
 
     pub execs: Vec<ProcessExec>,
     // note: children might be reported here before they actually exist as ProcessInfo entries
-    pub children: Vec<Pid>,
+    pub children: Vec<(ProcessKind, Pid)>,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq)]
+pub enum ProcessKind {
+    Process,
+    Thread,
 }
 
 #[derive(Debug)]
@@ -125,7 +131,23 @@ pub unsafe fn record_trace(child_path: &CStr, child_argv: &[CString]) -> Result<
                         let next_partial_syscall = if let Some(nr) = nr {
                             let res = match nr {
                                 // handle fork-like
-                                Sysno::clone | Sysno::fork | Sysno::vfork | Sysno::clone3 => SyscallEntry::Fork,
+                                Sysno::clone => {
+                                    let flags = info_entry.args[0];
+                                    SyscallEntry::Fork(process_kind_from_clone_flags(flags as _))
+                                }
+                                Sysno::clone3 => {
+                                    let clone_args_ptr = info_entry.args[0];
+                                    let clone_args_size = info_entry.args[1] as usize;
+                                    let flags = if clone_args_size >= 8 {
+                                        ptrace::read(pid, clone_args_ptr as *mut libc::c_void)
+                                            .expect("failed to read clone_args")
+                                    } else {
+                                        0
+                                    };
+
+                                    SyscallEntry::Fork(process_kind_from_clone_flags(flags as _))
+                                }
+                                Sysno::fork | Sysno::vfork => SyscallEntry::Fork(ProcessKind::Process),
                                 // handle exec-like
                                 Sysno::execve => {
                                     let args_ptr = ExecArgPointers {
@@ -171,11 +193,12 @@ pub unsafe fn record_trace(child_path: &CStr, child_argv: &[CString]) -> Result<
                         let partial = partial_syscalls.remove(&pid).unwrap_or(SyscallEntry::Ignore);
                         match partial {
                             SyscallEntry::Ignore => {}
-                            SyscallEntry::Fork => {
+                            SyscallEntry::Fork(fork_kind) => {
                                 println!("[{pid}] syscall exit fork-like");
                                 if info_exit.sval > 0 {
+                                    let process = recording.processes.get_mut(&pid).unwrap();
                                     let child_pid = Pid::from_raw(info_exit.sval as i32);
-                                    recording.processes.get_mut(&pid).unwrap().children.push(child_pid);
+                                    process.children.push((fork_kind, child_pid));
                                 }
                             }
                             SyscallEntry::Exec(ref args) => {
@@ -262,7 +285,7 @@ pub unsafe fn run_child(child_path: &CStr, child_argv: &[CString]) -> Result<(),
 #[derive(Debug)]
 enum SyscallEntry {
     Ignore,
-    Fork,
+    Fork(ProcessKind),
     Exec(ExecArgs),
 }
 
@@ -280,6 +303,14 @@ struct ExecArgs {
     path: Vec<u8>,
     #[allow(dead_code)]
     argv: Vec<Vec<u8>>,
+}
+
+fn process_kind_from_clone_flags(flags: libc::c_long) -> ProcessKind {
+    if (flags & libc::CLONE_THREAD as libc::c_long) != 0 {
+        ProcessKind::Thread
+    } else {
+        ProcessKind::Process
+    }
 }
 
 /// Fixed version of ptrace::syscall_info.

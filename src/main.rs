@@ -35,7 +35,7 @@ fn main() -> ExitCode {
         println!("  {:?}", info);
     }
 
-    let placed = place_processes(&recording);
+    let placed = place_processes(&recording, false);
 
     main_gui(recording, placed).expect("GUI failed");
 

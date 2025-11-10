@@ -10,6 +10,6 @@ egui = "0.33.0"
 index-map = "0.1.0"
 indexmap = "2.12.0"
 itertools = "0.14.0"
-nix = { version = "0.30.1", features = ["ptrace", "signal"] }
+nix = { version = "0.30.1", features = ["ptrace", "signal", "fs"] }
 ordered-float = "5.1.0"
 syscalls = "0.7.0"

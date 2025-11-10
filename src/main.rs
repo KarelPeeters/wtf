@@ -5,8 +5,9 @@ use eframe::Frame;
 use egui::epaint::CornerRadiusF32;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
 use egui::{CentralPanel, Color32, Context, FontId, Pos2, Rect, ScrollArea, Sense, Stroke, StrokeKind};
-use std::ffi::{CString, OsString};
+use std::ffi::CString;
 use std::ops::RangeInclusive;
+use std::process::ExitCode;
 use wtf::layout::{place_processes, PlacedProcess};
 use wtf::trace::{record_trace, Recording};
 
@@ -16,11 +17,18 @@ struct Args {
     command: Vec<CString>,
 }
 
-fn main() {
+fn main() -> ExitCode {
     let args = Args::parse();
     assert!(args.command.len() > 0);
 
     let recording = unsafe { record_trace(&args.command[0], &args.command[0..]) };
+    let recording = match recording {
+        Ok(rec) => rec,
+        Err(e) => {
+            eprintln!("Failed to spawn child process: {}", e.0);
+            return ExitCode::FAILURE;
+        }
+    };
 
     println!("Recording complete:");
     for info in recording.processes.values() {
@@ -30,6 +38,8 @@ fn main() {
     let placed = place_processes(&recording);
 
     main_gui(recording, placed).expect("GUI failed");
+
+    ExitCode::SUCCESS
 }
 
 fn main_gui(recording: Recording, placed: PlacedProcess) -> eframe::Result<()> {

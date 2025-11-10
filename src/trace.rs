@@ -4,7 +4,6 @@ use crate::util::MapExt;
 use indexmap::IndexMap;
 use nix::errno::Errno;
 use nix::libc;
-use nix::libc::ptrace_syscall_info;
 use nix::sys::signal::Signal;
 use nix::sys::wait::WaitStatus;
 use nix::sys::{ptrace, wait};
@@ -51,33 +50,32 @@ impl ProcessInfo {
     }
 }
 
+#[derive(Debug)]
+pub struct SpawnFailed(pub Errno);
+
 // TODO better error handling
-pub unsafe fn record_trace(child_path: &CStr, child_argv: &[CString]) -> Recording {
+pub unsafe fn record_trace(child_path: &CStr, child_argv: &[CString]) -> Result<Recording, SpawnFailed> {
     // start the child process
     let root_pid = unsafe {
-        // TODO communicate launch status back to parent through pipe
-        // let (rx, tx) = nix::unistd::pipe().expect("failed to create pipe");
-        let fork_result = nix::unistd::fork().expect("failed work");
-
+        let fork_result = nix::unistd::fork().expect("failed fork");
         match fork_result {
-            ForkResult::Parent { child: child_pid } => {
-                // nix::unistd::close(rx).expect("failed to close rx pipe");
-                child_pid
-            }
-            ForkResult::Child => {
-                // nix::unistd::close(tx).expect("failed to close rx pipe");
-                ptrace::traceme().expect("failed ptrace::traceme");
-                nix::sys::signal::kill(nix::unistd::getpid(), Signal::SIGSTOP).expect("failed to send initial SIGSTOP");
-                nix::unistd::execvp(child_path, child_argv).expect("failed to spawn child");
-                unreachable!("after exec");
-            }
+            ForkResult::Parent { child } => child,
+            ForkResult::Child => match run_child(child_path, child_argv) {
+                Ok(()) => unreachable!("after exec"),
+                Err(_) => {
+                    // we don't need to send the error to the parent,
+                    //   it will see it anyway because it's recording syscalls!
+                    libc::exit(1)
+                }
+            },
         }
     };
 
-    // wait for child to stop
+    // wait for child to stop, so we know for sure that it exists and has called traceme
     let s = wait::waitpid(root_pid, None).expect("failed initial wait::waitpid");
     assert!(matches!(s, WaitStatus::Stopped(pid, Signal::SIGSTOP) if pid == root_pid));
 
+    // start ptrace
     // options:
     // * PTRACE_O_TRACESYSGOOD: add mask to syscall stops, allows parsing WaitStatus::PtraceSyscall
     // * PTRACE_O_EXITKILL: kill traced process if tracer exits to avoid orphaned processes
@@ -89,10 +87,11 @@ pub unsafe fn record_trace(child_path: &CStr, child_argv: &[CString]) -> Recordi
         | ptrace::Options::PTRACE_O_TRACEVFORK;
     ptrace::setoptions(root_pid, ptrace_options).expect("failed to set ptrace options");
 
-    // resume
+    // resume after earlier stop
     ptrace::syscall(root_pid, None).expect("failed initial ptrace resume");
 
     // result data structure
+    // TODO extract this somewhere else, build this via a callback
     // TODO is this time info accurate enough?
     let time_start = Instant::now();
     let mut recording = Recording {
@@ -107,6 +106,9 @@ pub unsafe fn record_trace(child_path: &CStr, child_argv: &[CString]) -> Recordi
     let mut partial_syscalls: HashMap<Pid, SyscallEntry> = HashMap::new();
 
     // main tracing event loop
+    let mut root_exec_any_success = false;
+    let mut root_exec_last_error = None;
+
     loop {
         let status = wait::waitpid(None, None).expect("failed wait::waitpid");
 
@@ -164,21 +166,32 @@ pub unsafe fn record_trace(child_path: &CStr, child_argv: &[CString]) -> Recordi
                         partial_syscalls.insert_first(pid, next_partial_syscall);
                     }
                     libc::PTRACE_SYSCALL_INFO_EXIT => {
-                        let info_exir = unsafe { &info.u.exit };
+                        let info_exit = unsafe { &info.u.exit };
 
                         let partial = partial_syscalls.remove(&pid).unwrap_or(SyscallEntry::Ignore);
                         match partial {
                             SyscallEntry::Ignore => {}
                             SyscallEntry::Fork => {
                                 println!("[{pid}] syscall exit fork-like");
-                                if info_exir.sval > 0 {
-                                    let child_pid = Pid::from_raw(info_exir.sval as i32);
+                                if info_exit.sval > 0 {
+                                    let child_pid = Pid::from_raw(info_exit.sval as i32);
                                     recording.processes.get_mut(&pid).unwrap().children.push(child_pid);
                                 }
                             }
                             SyscallEntry::Exec(ref args) => {
                                 println!("[{pid}] syscall exit exec-like");
-                                if info_exir.sval == 0 {
+
+                                // check for errors when spawning the child process
+                                // there can be multiple exec attempts due to $PATH, it's fine if any of them succeeds
+                                if !root_exec_any_success && pid == root_pid {
+                                    if info_exit.sval < 0 {
+                                        root_exec_last_error = Some(Errno::from_raw(-info_exit.sval as i32));
+                                    } else {
+                                        root_exec_any_success = true;
+                                    }
+                                }
+
+                                if info_exit.sval == 0 {
                                     let proc_exec = ProcessExec {
                                         time: time_start.elapsed().as_secs_f32(),
                                         path: String::from_utf8_lossy(&args.path).into_owned(),
@@ -227,7 +240,23 @@ pub unsafe fn record_trace(child_path: &CStr, child_argv: &[CString]) -> Recordi
         }
     }
 
-    recording
+    // check if at least the root process managed to start
+    if !root_exec_any_success {
+        let err = root_exec_last_error.expect("there wasn't any exec attempt");
+        return Err(SpawnFailed(err));
+    }
+
+    Ok(recording)
+}
+
+pub unsafe fn run_child(child_path: &CStr, child_argv: &[CString]) -> Result<(), nix::Error> {
+    // mark this process as traceable
+    ptrace::traceme()?;
+    // pause this process, to give the parent a change to start tracing without any race conditions
+    nix::sys::signal::kill(nix::unistd::getpid(), Signal::SIGSTOP)?;
+    // actually execute the target program
+    nix::unistd::execvp(child_path, child_argv)?;
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -255,7 +284,7 @@ struct ExecArgs {
 
 /// Fixed version of ptrace::syscall_info.
 /// Based on https://github.com/nix-rust/nix/issues/2660.
-fn ptrace_syscall_info(pid: Pid) -> Result<ptrace_syscall_info, Errno> {
+fn ptrace_syscall_info(pid: Pid) -> Result<libc::ptrace_syscall_info, Errno> {
     let mut data = std::mem::MaybeUninit::<libc::ptrace_syscall_info>::uninit();
 
     let res = unsafe {

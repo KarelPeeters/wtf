@@ -70,13 +70,13 @@ impl eframe::App for App {
                     let Some(DataToGui { recording, placed }) = &self.data else {
                         return;
                     };
-                    let Some(placed) = placed else {
+                    let Some(root_placed) = placed else {
                         return;
                     };
 
                     // first pass: compute bounding box
                     let mut bounding_box = Rect::NOTHING;
-                    placed.visit(&mut |placed, row| {
+                    root_placed.visit(&mut |placed, row| {
                         let proc_rect = self.proc_rect(row, placed.row_height, placed.time_bound.clone());
                         bounding_box |= proc_rect;
                     });
@@ -88,8 +88,8 @@ impl eframe::App for App {
                     // second pass: actually paint
                     // TODO keep animating this while the process is still running?
                     let text_color = ui.visuals().text_color();
-                    let time_bound_end = *placed.time_bound.end();
-                    placed.visit(&mut |placed, row| {
+                    let time_bound_end = *root_placed.time_bound.end();
+                    root_placed.visit(&mut |placed, row| {
                         let proc = recording.processes.get(&placed.pid).unwrap();
                         let proc_time = proc.time_start..=proc.time_end.unwrap_or(time_bound_end);
 
@@ -101,7 +101,7 @@ impl eframe::App for App {
 
                         // TODO better coloring
                         // TODO stroke around all children?
-                        let color_scale = placed.depth as f32 / placed.max_depth as f32;
+                        let color_scale = placed.depth as f32 / root_placed.max_depth as f32;
                         let color = Color32::from_gray((20.0 + (80.0 * color_scale)) as u8);
                         painter.rect(
                             proc_rect_full,

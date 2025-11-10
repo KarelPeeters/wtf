@@ -1,5 +1,6 @@
 use crate::layout::PlacedProcess;
 use crate::record::Recording;
+use crossbeam::channel::Sender;
 use eframe::emath::{Pos2, Rect};
 use eframe::epaint::{Color32, CornerRadiusF32, FontId, Stroke, StrokeKind};
 use eframe::Frame;
@@ -8,12 +9,17 @@ use egui::{CentralPanel, Context, ScrollArea, Sense};
 use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex};
 
-pub struct GuiData {
+pub struct GuiHandle {
+    pub data_to_gui: Arc<Mutex<Option<DataToGui>>>,
+    pub ctx: Context,
+}
+
+pub struct DataToGui {
     pub recording: Recording,
     pub placed: Option<PlacedProcess>,
 }
 
-pub fn main_gui(data: Arc<Mutex<Option<GuiData>>>) -> eframe::Result<()> {
+pub fn main_gui(channel: Sender<GuiHandle>) -> eframe::Result<()> {
     // TODO add icon
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([400.0, 300.0]),
@@ -22,9 +28,17 @@ pub fn main_gui(data: Arc<Mutex<Option<GuiData>>>) -> eframe::Result<()> {
     eframe::run_native(
         "wtf",
         native_options,
-        Box::new(|_| {
+        Box::new(|ctx| {
+            let data_to_gui = Arc::new(Mutex::new(None));
+            let interact = GuiHandle {
+                data_to_gui: data_to_gui.clone(),
+                ctx: ctx.egui_ctx.clone(),
+            };
+            let _ = channel.send(interact);
+            drop(channel);
+
             Ok(Box::new(App {
-                data_mutex: data,
+                data_to_gui,
                 data: None,
                 zoom_linear: 0.0,
             }))
@@ -33,19 +47,16 @@ pub fn main_gui(data: Arc<Mutex<Option<GuiData>>>) -> eframe::Result<()> {
 }
 
 struct App {
-    data_mutex: Arc<Mutex<Option<GuiData>>>,
-    data: Option<GuiData>,
+    data_to_gui: Arc<Mutex<Option<DataToGui>>>,
+    data: Option<DataToGui>,
     zoom_linear: f32,
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &Context, _: &mut Frame) {
         // try getting new data
-        {
-            let mut data_guard = self.data_mutex.lock().unwrap();
-            if let Some(data) = data_guard.take() {
-                self.data = Some(data);
-            }
+        if let Some(new_data) = self.data_to_gui.lock().unwrap().take() {
+            self.data = Some(new_data);
         }
 
         CentralPanel::default().show(ctx, |ui| {
@@ -53,9 +64,10 @@ impl eframe::App for App {
                 .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
                 .scroll_source(ScrollSource::SCROLL_BAR | ScrollSource::DRAG)
                 .show(ui, |ui| {
+                    // TODO move this to an actual UI element or at least a helper function
                     ui.take_available_space();
 
-                    let Some(GuiData { recording, placed }) = &self.data else {
+                    let Some(DataToGui { recording, placed }) = &self.data else {
                         return;
                     };
                     let Some(placed) = placed else {

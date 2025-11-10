@@ -6,11 +6,11 @@ use std::ffi::CString;
 use std::ops::ControlFlow;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use wtf::gui::{main_gui, GuiData};
+use std::sync::Arc;
+use wtf::gui::{main_gui, DataToGui, GuiHandle};
 use wtf::layout::place_processes;
 use wtf::record::Recording;
-use wtf::trace::record_trace;
+use wtf::trace::{record_trace, TraceEvent};
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -23,8 +23,8 @@ fn main() -> ExitCode {
     assert!(args.command.len() > 0);
 
     let stopped = Arc::new(AtomicBool::new(false));
-    let (event_tx, event_rx) = crossbeam::channel::unbounded();
-    let placed_mutex = Arc::new(Mutex::new(None));
+    let (event_tx, event_rx) = crossbeam::channel::unbounded::<TraceEvent>();
+    let (gui_handle_tx, gui_handle_rx) = crossbeam::channel::bounded::<GuiHandle>(1);
 
     // spawn tracing thread
     // TODO does fork/exec work fine with the extra spawned thread?  if not, split this up into start/run
@@ -55,9 +55,15 @@ fn main() -> ExitCode {
     // spawn collector thread
     let handle_collector = {
         let stopped = stopped.clone();
-        let placed_mutex = placed_mutex.clone();
         std::thread::spawn(move || {
+            let gui_handle = match gui_handle_rx.recv() {
+                Ok(handle) => handle,
+                Err(RecvError) => return,
+            };
+            drop(gui_handle_rx);
+
             let mut recording = Recording::new();
+
             loop {
                 if stopped.load(Ordering::Relaxed) {
                     break;
@@ -80,17 +86,19 @@ fn main() -> ExitCode {
                 // TODO make thread inclusion configurable from the GUI
                 // TODO avoid deep cloning here?
                 let placed = place_processes(&recording, false);
-                let data = GuiData {
+                let data = DataToGui {
                     recording: recording.clone(),
                     placed,
                 };
-                *placed_mutex.lock().unwrap() = Some(data);
+
+                *gui_handle.data_to_gui.lock().unwrap() = Some(data);
+                gui_handle.ctx.request_repaint();
             }
         })
     };
 
     // start gui (egui wants this to be on the main thread)
-    main_gui(placed_mutex).expect("GUI failed");
+    main_gui(gui_handle_tx).expect("GUI failed");
     stopped.store(true, Ordering::Relaxed);
 
     let record_result = handle_tracer.join().expect("Failed to join tracer thread");

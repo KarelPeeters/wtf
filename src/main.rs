@@ -48,7 +48,7 @@ fn main() -> ExitCode {
     let _ = handle_collector.join();
 
     match record_result {
-        Ok(()) => {},
+        Ok(()) => {}
         Err(e) => {
             eprintln!("Failed to spawn child process: {}", e.0);
             return ExitCode::FAILURE;
@@ -110,10 +110,13 @@ fn thread_collector(stopped: Arc<AtomicBool>, event_rx: Receiver<TraceEvent>, gu
         // compute a new mapping
         // TODO make thread inclusion configurable from the GUI
         // TODO avoid deep cloning here?
-        let placed = place_processes(&recording, false);
+        let placed_threads_no = place_processes(&recording, false);
+        let placed_threads_yes = place_processes(&recording, true);
+
         let data = DataToGui {
             recording: recording.clone(),
-            placed,
+            placed_threads_no,
+            placed_threads_yes,
         };
 
         *gui_handle.data_to_gui.lock().unwrap() = Some(data);

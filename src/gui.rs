@@ -18,7 +18,9 @@ pub struct GuiHandle {
 
 pub struct DataToGui {
     pub recording: Recording,
-    pub placed: Option<PlacedProcess>,
+
+    pub placed_threads_no: Option<PlacedProcess>,
+    pub placed_threads_yes: Option<PlacedProcess>,
 }
 
 pub fn main_gui(channel: Sender<GuiHandle>) -> eframe::Result<()> {
@@ -50,6 +52,7 @@ struct App {
     data: Option<DataToGui>,
 
     zoom_linear: f32,
+    show_threads: bool,
 
     selected_pid: Option<Pid>,
     hovered_pid: Option<Pid>,
@@ -65,6 +68,8 @@ impl eframe::App for App {
         SidePanel::right("side_panel").show(ctx, |ui| {
             ui.take_available_space();
 
+            ui.checkbox(&mut self.show_threads, "show threads");
+
             ui.label(self.selected_pid_info());
         });
 
@@ -75,10 +80,20 @@ impl eframe::App for App {
                 .show(ui, |ui| {
                     ui.take_available_space();
 
-                    let Some(DataToGui { recording, placed }) = &self.data else {
+                    let Some(DataToGui {
+                        recording,
+                        placed_threads_no,
+                        placed_threads_yes,
+                    }) = &self.data
+                    else {
                         return;
                     };
-                    let Some(root_placed) = placed else {
+                    let root_placed = if self.show_threads {
+                        placed_threads_yes
+                    } else {
+                        placed_threads_no
+                    };
+                    let Some(root_placed) = root_placed else {
                         return;
                     };
 
@@ -114,6 +129,7 @@ impl App {
             data_to_gui: Arc::new(Mutex::new(None)),
             data: None,
             zoom_linear: 0.0,
+            show_threads: false,
             selected_pid: None,
             hovered_pid: None,
         }

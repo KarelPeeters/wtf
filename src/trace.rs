@@ -169,10 +169,6 @@ pub unsafe fn record_trace_impl(
                                 _ => SyscallEntry::Ignore,
                             };
 
-                            if !matches!(res, SyscallEntry::Ignore) {
-                                println!("[{pid}] syscall entry {nr:?}");
-                            }
-
                             res
                         } else {
                             // ignore unknown syscalls
@@ -188,7 +184,6 @@ pub unsafe fn record_trace_impl(
                         match partial {
                             SyscallEntry::Ignore => {}
                             SyscallEntry::Fork(fork_kind) => {
-                                println!("[{pid}] syscall exit fork-like");
                                 if info_exit.sval > 0 {
                                     callback(TraceEvent::ProcessChild {
                                         parent: pid,
@@ -198,8 +193,6 @@ pub unsafe fn record_trace_impl(
                                 }
                             }
                             SyscallEntry::Exec(ref args) => {
-                                println!("[{pid}] syscall exit exec-like");
-
                                 // check for errors when spawning the child process
                                 // there can be multiple exec attempts due to $PATH, it's fine if any of them succeeds
                                 if !root_exec_any_success && pid == root_pid {

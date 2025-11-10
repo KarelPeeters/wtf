@@ -5,13 +5,12 @@ use indexmap::IndexMap;
 use nix::errno::Errno;
 use nix::libc;
 use nix::libc::ptrace_syscall_info;
-use nix::sys::signal::SIGSTOP;
+use nix::sys::signal::Signal;
 use nix::sys::wait::WaitStatus;
 use nix::sys::{ptrace, wait};
-use nix::unistd::Pid;
+use nix::unistd::{ForkResult, Pid};
 use std::collections::HashMap;
-use std::os::unix::process::CommandExt;
-use std::process::Command;
+use std::ffi::{CStr, CString};
 use std::time::Instant;
 use syscalls::Sysno;
 
@@ -53,17 +52,31 @@ impl ProcessInfo {
 }
 
 // TODO better error handling
-pub fn record_trace(mut cmd: Command) -> Recording {
+pub unsafe fn record_trace(child_path: &CStr, child_argv: &[CString]) -> Recording {
     // start the child process
-    unsafe {
-        // tell the child process to start being traced
-        cmd.pre_exec(|| {
-            ptrace::traceme().map_err(errno_to_io)?;
-            Ok(())
-        })
+    let root_pid = unsafe {
+        // TODO communicate launch status back to parent through pipe
+        // let (rx, tx) = nix::unistd::pipe().expect("failed to create pipe");
+        let fork_result = nix::unistd::fork().expect("failed work");
+
+        match fork_result {
+            ForkResult::Parent { child: child_pid } => {
+                // nix::unistd::close(rx).expect("failed to close rx pipe");
+                child_pid
+            }
+            ForkResult::Child => {
+                // nix::unistd::close(tx).expect("failed to close rx pipe");
+                ptrace::traceme().expect("failed ptrace::traceme");
+                nix::sys::signal::kill(nix::unistd::getpid(), Signal::SIGSTOP).expect("failed to send initial SIGSTOP");
+                nix::unistd::execvp(child_path, child_argv).expect("failed to spawn child");
+                unreachable!("after exec");
+            }
+        }
     };
-    let root = cmd.spawn().expect("failed to spawn child");
-    let root_pid = Pid::from_raw(root.id() as i32);
+
+    // wait for child to stop
+    let s = wait::waitpid(root_pid, None).expect("failed initial wait::waitpid");
+    assert!(matches!(s, WaitStatus::Stopped(pid, Signal::SIGSTOP) if pid == root_pid));
 
     // options:
     // * PTRACE_O_TRACESYSGOOD: add mask to syscall stops, allows parsing WaitStatus::PtraceSyscall
@@ -75,6 +88,9 @@ pub fn record_trace(mut cmd: Command) -> Recording {
         | ptrace::Options::PTRACE_O_TRACEFORK
         | ptrace::Options::PTRACE_O_TRACEVFORK;
     ptrace::setoptions(root_pid, ptrace_options).expect("failed to set ptrace options");
+
+    // resume
+    ptrace::syscall(root_pid, None).expect("failed initial ptrace resume");
 
     // result data structure
     // TODO is this time info accurate enough?
@@ -193,7 +209,7 @@ pub fn record_trace(mut cmd: Command) -> Recording {
             }
             // stopped by some signal, just continue
             WaitStatus::Stopped(pid, signal) => {
-                if signal == SIGSTOP && !recording.processes.contains_key(&pid) {
+                if matches!(signal, Signal::SIGSTOP | Signal::SIGTRAP) && !recording.processes.contains_key(&pid) {
                     // initial stop for new child process, create it
                     let proc_info = ProcessInfo::new(pid, time_start.elapsed().as_secs_f32());
                     recording.processes.insert_first(pid, proc_info);
@@ -281,8 +297,4 @@ fn ptrace_read_str(pid: Pid, start: *mut libc::c_void) -> nix::Result<Vec<u8>> {
     }
 
     Ok(result)
-}
-
-fn errno_to_io(e: Errno) -> std::io::Error {
-    std::io::Error::from_raw_os_error(e as i32)
 }

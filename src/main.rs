@@ -5,24 +5,22 @@ use eframe::Frame;
 use egui::epaint::CornerRadiusF32;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
 use egui::{CentralPanel, Color32, Context, FontId, Pos2, Rect, ScrollArea, Sense, Stroke, StrokeKind};
+use std::ffi::{CString, OsString};
 use std::ops::RangeInclusive;
-use std::process::Command;
 use wtf::layout::{place_processes, PlacedProcess};
 use wtf::trace::{record_trace, Recording};
 
 #[derive(Debug, Parser)]
 struct Args {
     #[arg(trailing_var_arg = true, required = true, num_args = 1..)]
-    command: Vec<String>,
+    command: Vec<CString>,
 }
 
 fn main() {
     let args = Args::parse();
     assert!(args.command.len() > 0);
 
-    let mut cmd = Command::new(&args.command[0]);
-    cmd.args(&args.command[1..]);
-    let recording = record_trace(cmd);
+    let recording = unsafe { record_trace(&args.command[0], &args.command[0..]) };
 
     println!("Recording complete:");
     for info in recording.processes.values() {

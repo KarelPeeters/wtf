@@ -1,9 +1,13 @@
 #![cfg(unix)]
 
 use clap::Parser;
+use crossbeam::channel::{RecvError, SendError, TryRecvError};
 use std::ffi::CString;
+use std::ops::ControlFlow;
 use std::process::ExitCode;
-use wtf::gui::main_gui;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use wtf::gui::{main_gui, GuiData};
 use wtf::layout::place_processes;
 use wtf::record::Recording;
 use wtf::trace::record_trace;
@@ -18,25 +22,86 @@ fn main() -> ExitCode {
     let args = Args::parse();
     assert!(args.command.len() > 0);
 
-    let mut recording = Recording::new();
-    let record_result = unsafe { record_trace(&args.command[0], &args.command[0..], |event| recording.report(event)) };
+    let stopped = Arc::new(AtomicBool::new(false));
+    let (event_tx, event_rx) = crossbeam::channel::unbounded();
+    let placed_mutex = Arc::new(Mutex::new(None));
+
+    // spawn tracing thread
+    // TODO does fork/exec work fine with the extra spawned thread?  if not, split this up into start/run
+    // TODO result handling would also be nicer with split, then we get the result in the first half already
+    let handle_tracer = {
+        let stopped = stopped.clone();
+        std::thread::spawn(move || unsafe {
+            let record_result = record_trace(&args.command[0], &args.command[0..], |event| {
+                if stopped.load(Ordering::Relaxed) {
+                    return ControlFlow::Break(());
+                }
+
+                match event_tx.send(event) {
+                    Ok(()) => ControlFlow::Continue(()),
+                    Err(SendError(_)) => ControlFlow::Break(()),
+                }
+            });
+            drop(event_tx);
+
+            if record_result.is_err() {
+                stopped.store(true, Ordering::Relaxed);
+            }
+
+            record_result
+        })
+    };
+
+    // spawn collector thread
+    let handle_collector = {
+        let stopped = stopped.clone();
+        let placed_mutex = placed_mutex.clone();
+        std::thread::spawn(move || {
+            let mut recording = Recording::new();
+            loop {
+                if stopped.load(Ordering::Relaxed) {
+                    break;
+                }
+
+                // wait for next event
+                match event_rx.recv() {
+                    Ok(event) => recording.report(event),
+                    Err(RecvError) => break,
+                }
+                // batch collect all available events
+                match event_rx.try_recv() {
+                    Ok(event) => recording.report(event),
+                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Disconnected) => break,
+                }
+
+                // compute a new mapping
+                // TODO send event to gui?
+                // TODO make thread inclusion configurable from the GUI
+                // TODO avoid deep cloning here?
+                let placed = place_processes(&recording, false);
+                let data = GuiData {
+                    recording: recording.clone(),
+                    placed,
+                };
+                *placed_mutex.lock().unwrap() = Some(data);
+            }
+        })
+    };
+
+    // start gui (egui wants this to be on the main thread)
+    main_gui(placed_mutex).expect("GUI failed");
+    stopped.store(true, Ordering::Relaxed);
+
+    let record_result = handle_tracer.join().expect("Failed to join tracer thread");
+    let _ = handle_collector.join();
+
     match record_result {
         Ok(rec) => rec,
         Err(e) => {
             eprintln!("Failed to spawn child process: {}", e.0);
             return ExitCode::FAILURE;
         }
-    };
-
-    println!("Recording complete:");
-    for info in recording.processes.values() {
-        println!("  {:?}", info);
-    }
-
-    let placed = place_processes(&recording, false);
-
-    if let Some(placed) = placed {
-        main_gui(recording, placed).expect("GUI failed");
     }
 
     ExitCode::SUCCESS

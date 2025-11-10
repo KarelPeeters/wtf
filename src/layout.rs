@@ -23,7 +23,7 @@ pub struct PlacedProcess {
 
 pub fn place_processes(rec: &Recording, include_threads: bool) -> Option<PlacedProcess> {
     // TODO what about orphans?
-    rec.root_pid.map(|root_pid| {
+    rec.root_pid.and_then(|root_pid| {
         let mut cache = TimeCache::new();
         place_process(rec, include_threads, &mut cache, root_pid, 0)
     })
@@ -49,18 +49,21 @@ fn place_process(
     cache: &mut TimeCache,
     pid: Pid,
     depth: usize,
-) -> PlacedProcess {
+) -> Option<PlacedProcess> {
+    let info = rec.processes.get(&pid)?;
+
     // filter/flatten children
     let children = if include_threads {
-        let info = rec.processes.get(&pid).unwrap();
         Either::Left(info.children.iter().map(|&(_, c)| c))
     } else {
         let mut children = vec![];
-        fn f(rec: &Recording, children: &mut Vec<Pid>, pid: Pid) {
-            for &(child_kind, child_pid) in &rec.processes.get(&pid).unwrap().children {
-                match child_kind {
-                    ProcessKind::Process => children.push(child_pid),
-                    ProcessKind::Thread => f(rec, children, child_pid),
+        fn f(rec: &Recording, children: &mut Vec<Pid>, curr: Pid) {
+            if let Some(info) = rec.processes.get(&curr) {
+                for &(child_kind, child_pid) in &info.children {
+                    match child_kind {
+                        ProcessKind::Process => children.push(child_pid),
+                        ProcessKind::Thread => f(rec, children, child_pid),
+                    }
                 }
             }
         }
@@ -94,27 +97,28 @@ fn place_process(
     for (children_start, children_end) in sorted_events {
         // handle child ends (first to allow immediately reusing rows)
         for child in children_end {
-            let range = children_active.swap_remove(&child).unwrap();
-            free.release(range);
+            if let Some(range) = children_active.swap_remove(&child) {
+                free.release(range)
+            }
         }
 
         // handle child starts
         for child in children_start {
-            let mut child_placed = place_process(rec, include_threads, cache, child, depth + 1);
-            assert_eq!(child_placed.row_offset, 0);
+            if let Some(mut child_placed) = place_process(rec, include_threads, cache, child, depth + 1) {
+                assert_eq!(child_placed.row_offset, 0);
+                max_depth = max_depth.max(child_placed.max_depth);
 
-            max_depth = max_depth.max(child_placed.max_depth);
-
-            let child_height = child_placed.row_height;
-            let child_row = free.allocate(child_height);
-            child_placed.row_offset = 1 + child_row;
-            children_active.insert_first(child, child_row..child_row + child_height);
-            placed_children.push(child_placed);
+                let child_height = child_placed.row_height;
+                let child_row = free.allocate(child_height);
+                child_placed.row_offset = 1 + child_row;
+                children_active.insert_first(child, child_row..child_row + child_height);
+                placed_children.push(child_placed);
+            }
         }
     }
 
     // combine everything
-    PlacedProcess {
+    Some(PlacedProcess {
         pid,
         depth,
         row_offset: 0,
@@ -122,7 +126,7 @@ fn place_process(
         children: placed_children,
         max_depth,
         time_bound: process_time_bound(rec, cache, pid),
-    }
+    })
 }
 
 type TimeCache = IndexMap<Pid, RangeInclusive<f32>>;
@@ -135,17 +139,17 @@ fn process_time_bound(rec: &Recording, cache: &mut TimeCache, pid: Pid) -> Range
     let mut bound_min = f32::MAX;
     let mut bound_max = f32::MIN;
 
-    let info = rec.processes.get(&pid).unwrap();
-    for &(_, c) in &info.children {
-        let c_bound = process_time_bound(rec, cache, c);
-        bound_min = bound_min.min(*c_bound.start());
-        bound_max = bound_max.max(*c_bound.end());
+    if let Some(info) = rec.processes.get(&pid) {
+        for &(_, c) in &info.children {
+            let c_bound = process_time_bound(rec, cache, c);
+            bound_min = bound_min.min(*c_bound.start());
+            bound_max = bound_max.max(*c_bound.end());
+        }
+        process_for_each_time(info, |t| {
+            bound_min = bound_min.min(t);
+            bound_max = bound_max.max(t);
+        });
     }
-
-    process_for_each_time(info, |t| {
-        bound_min = bound_min.min(t);
-        bound_max = bound_max.max(t);
-    });
 
     let res = bound_min..=bound_max;
     cache.insert_first(pid, res.clone());

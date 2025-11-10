@@ -3,13 +3,13 @@ use crate::util::MapExt;
 use indexmap::IndexMap;
 use nix::unistd::Pid;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Recording {
     pub root_pid: Option<Pid>,
     pub processes: IndexMap<Pid, ProcessInfo>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProcessInfo {
     pub pid: Pid,
 
@@ -21,7 +21,7 @@ pub struct ProcessInfo {
     pub children: Vec<(ProcessKind, Pid)>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProcessExec {
     pub time: f32,
     pub path: String,

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.5.51", features = ["derive"] }
+crossbeam = "0.8.4"
 eframe = "0.33.0"
 egui = "0.33.0"
 index-map = "0.1.0"

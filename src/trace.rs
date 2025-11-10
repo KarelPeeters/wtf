@@ -10,6 +10,7 @@ use nix::sys::{ptrace, wait};
 use nix::unistd::{ForkResult, Pid};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
+use std::ops::ControlFlow;
 use std::time::Instant;
 use syscalls::Sysno;
 
@@ -42,8 +43,20 @@ pub enum TraceEvent {
 pub unsafe fn record_trace(
     child_path: &CStr,
     child_argv: &[CString],
-    mut callback: impl FnMut(TraceEvent),
+    mut callback: impl FnMut(TraceEvent) -> ControlFlow<()>,
 ) -> Result<(), SpawnFailed> {
+    let r = unsafe { record_trace_impl(child_path, child_argv, |event| callback(event)) };
+    match r {
+        ControlFlow::Continue(r) => r,
+        ControlFlow::Break(()) => Ok(()),
+    }
+}
+
+pub unsafe fn record_trace_impl(
+    child_path: &CStr,
+    child_argv: &[CString],
+    mut callback: impl FnMut(TraceEvent) -> ControlFlow<()>,
+) -> ControlFlow<(), Result<(), SpawnFailed>> {
     // start the child process
     let root_pid = unsafe {
         let fork_result = nix::unistd::fork().expect("failed fork");
@@ -82,7 +95,7 @@ pub unsafe fn record_trace(
     callback(TraceEvent::ProcessStart {
         pid: root_pid,
         time: 0.0,
-    });
+    })?;
 
     // resume after earlier stop
     ptrace::syscall(root_pid, None).expect("failed initial ptrace resume");
@@ -181,7 +194,7 @@ pub unsafe fn record_trace(
                                         parent: pid,
                                         child: Pid::from_raw(info_exit.sval as i32),
                                         kind: fork_kind,
-                                    });
+                                    })?;
                                 }
                             }
                             SyscallEntry::Exec(ref args) => {
@@ -204,7 +217,7 @@ pub unsafe fn record_trace(
                                         time: time_start.elapsed().as_secs_f32(),
                                         path: String::from_utf8_lossy(&args.path).into_owned(),
                                         argv: vec![],
-                                    });
+                                    })?;
                                 }
                             }
                         }
@@ -223,7 +236,7 @@ pub unsafe fn record_trace(
                 callback(TraceEvent::ProcessExit {
                     pid,
                     time: time_start.elapsed().as_secs_f32(),
-                });
+                })?;
 
                 partial_syscalls.remove(&pid);
                 if pid == root_pid {
@@ -238,7 +251,7 @@ pub unsafe fn record_trace(
                     callback(TraceEvent::ProcessStart {
                         pid,
                         time: time_start.elapsed().as_secs_f32(),
-                    });
+                    })?;
                     active_processes.insert(pid);
                 }
 
@@ -257,10 +270,10 @@ pub unsafe fn record_trace(
     // check if at least the root process managed to start
     if !root_exec_any_success {
         let err = root_exec_last_error.expect("there wasn't any exec attempt");
-        return Err(SpawnFailed(err));
+        return ControlFlow::Continue(Err(SpawnFailed(err)));
     }
 
-    Ok(())
+    ControlFlow::Continue(Ok(()))
 }
 
 pub unsafe fn run_child(child_path: &CStr, child_argv: &[CString]) -> Result<(), nix::Error> {

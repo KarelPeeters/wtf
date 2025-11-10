@@ -6,8 +6,14 @@ use eframe::Frame;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
 use egui::{CentralPanel, Context, ScrollArea, Sense};
 use std::ops::RangeInclusive;
+use std::sync::{Arc, Mutex};
 
-pub fn main_gui(recording: Recording, placed: PlacedProcess) -> eframe::Result<()> {
+pub struct GuiData {
+    pub recording: Recording,
+    pub placed: Option<PlacedProcess>,
+}
+
+pub fn main_gui(data: Arc<Mutex<Option<GuiData>>>) -> eframe::Result<()> {
     // TODO add icon
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default().with_inner_size([400.0, 300.0]),
@@ -18,8 +24,8 @@ pub fn main_gui(recording: Recording, placed: PlacedProcess) -> eframe::Result<(
         native_options,
         Box::new(|_| {
             Ok(Box::new(App {
-                recording,
-                placed,
+                data_mutex: data,
+                data: None,
                 zoom_linear: 0.0,
             }))
         }),
@@ -27,14 +33,21 @@ pub fn main_gui(recording: Recording, placed: PlacedProcess) -> eframe::Result<(
 }
 
 struct App {
-    recording: Recording,
-    placed: PlacedProcess,
-
+    data_mutex: Arc<Mutex<Option<GuiData>>>,
+    data: Option<GuiData>,
     zoom_linear: f32,
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &Context, _: &mut Frame) {
+        // try getting new data
+        {
+            let mut data_guard = self.data_mutex.lock().unwrap();
+            if let Some(data) = data_guard.take() {
+                self.data = Some(data);
+            }
+        }
+
         CentralPanel::default().show(ctx, |ui| {
             ScrollArea::both()
                 .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
@@ -42,9 +55,16 @@ impl eframe::App for App {
                 .show(ui, |ui| {
                     ui.take_available_space();
 
+                    let Some(GuiData { recording, placed }) = &self.data else {
+                        return;
+                    };
+                    let Some(placed) = placed else {
+                        return;
+                    };
+
                     // first pass: compute bounding box
                     let mut bounding_box = Rect::NOTHING;
-                    self.placed.visit(&mut |placed, row| {
+                    placed.visit(&mut |placed, row| {
                         let proc_rect = self.proc_rect(row, placed.row_height, placed.time_bound.clone());
                         bounding_box |= proc_rect;
                     });
@@ -56,9 +76,9 @@ impl eframe::App for App {
                     // second pass: actually paint
                     // TODO keep animating this while the process is still running?
                     let text_color = ui.visuals().text_color();
-                    let time_bound_end = *self.placed.time_bound.end();
-                    self.placed.visit(&mut |placed, row| {
-                        let proc = self.recording.processes.get(&placed.pid).unwrap();
+                    let time_bound_end = *placed.time_bound.end();
+                    placed.visit(&mut |placed, row| {
+                        let proc = recording.processes.get(&placed.pid).unwrap();
                         let proc_time = proc.time_start..=proc.time_end.unwrap_or(time_bound_end);
 
                         // TODO draw header and background in separate colors
@@ -69,7 +89,7 @@ impl eframe::App for App {
 
                         // TODO better coloring
                         // TODO stroke around all children?
-                        let color_scale = placed.depth as f32 / self.placed.max_depth as f32;
+                        let color_scale = placed.depth as f32 / placed.max_depth as f32;
                         let color = Color32::from_gray((20.0 + (80.0 * color_scale)) as u8);
                         painter.rect(
                             proc_rect_full,

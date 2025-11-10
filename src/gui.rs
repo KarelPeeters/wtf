@@ -5,7 +5,7 @@ use eframe::emath::{Pos2, Rect};
 use eframe::epaint::{Color32, CornerRadiusF32, FontId, Stroke, StrokeKind};
 use eframe::Frame;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
-use egui::{CentralPanel, Context, ScrollArea, Sense};
+use egui::{CentralPanel, Context, ScrollArea, Sense, SidePanel};
 use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex};
 
@@ -64,7 +64,6 @@ impl eframe::App for App {
                 .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
                 .scroll_source(ScrollSource::SCROLL_BAR | ScrollSource::DRAG)
                 .show(ui, |ui| {
-                    // TODO move this to an actual UI element or at least a helper function
                     ui.take_available_space();
 
                     let Some(DataToGui { recording, placed }) = &self.data else {
@@ -74,53 +73,7 @@ impl eframe::App for App {
                         return;
                     };
 
-                    // first pass: compute bounding box
-                    let mut bounding_box = Rect::NOTHING;
-                    root_placed.visit(&mut |placed, row| {
-                        let proc_rect = self.proc_rect(row, placed.row_height, placed.time_bound.clone());
-                        bounding_box |= proc_rect;
-                    });
-
-                    // allocate space and create painter
-                    let (response, painter) = ui.allocate_painter(bounding_box.size(), Sense::empty());
-                    let offset = response.rect.min.to_vec2();
-
-                    // second pass: actually paint
-                    // TODO keep animating this while the process is still running?
-                    let text_color = ui.visuals().text_color();
-                    let time_bound_end = *root_placed.time_bound.end();
-                    root_placed.visit(&mut |placed, row| {
-                        let proc = recording.processes.get(&placed.pid).unwrap();
-                        let proc_time = proc.time_start..=proc.time_end.unwrap_or(time_bound_end);
-
-                        // TODO draw header and background in separate colors
-                        let proc_rect_header = self.proc_rect(row, 1, proc_time.clone()).translate(offset);
-                        let proc_rect_full = self
-                            .proc_rect(row, placed.row_height, placed.time_bound.clone())
-                            .translate(offset);
-
-                        // TODO better coloring
-                        // TODO stroke around all children?
-                        let color_scale = placed.depth as f32 / root_placed.max_depth as f32;
-                        let color = Color32::from_gray((20.0 + (80.0 * color_scale)) as u8);
-                        painter.rect(
-                            proc_rect_full,
-                            CornerRadiusF32::ZERO,
-                            color,
-                            Stroke::NONE,
-                            StrokeKind::Inside,
-                        );
-
-                        let text = proc.execs.first().map(|exec| exec.path.as_str()).unwrap_or("?");
-                        let text = text.rsplit_once("/").map(|(_, s)| s).unwrap_or(text);
-
-                        let galley = painter.layout_no_wrap(text.to_owned(), FontId::default(), text_color);
-
-                        let text_rect = galley.rect.translate(proc_rect_header.min.to_vec2());
-                        if proc_rect_header.contains_rect(text_rect) {
-                            painter.galley(proc_rect_header.min, galley, text_color);
-                        }
-                    });
+                    self.show_timeline(ui, recording, root_placed);
 
                     // handle zoom events
                     // TODO can/should we move this earlier?
@@ -129,6 +82,7 @@ impl eframe::App for App {
                         let delta = ui.input(|input| input.raw_scroll_delta);
                         self.zoom_linear += delta.y;
                     }
+
                 });
         });
     }
@@ -143,5 +97,55 @@ impl App {
             min: Pos2::new(w * time.start(), h * (row as f32)),
             max: Pos2::new(w * time.end(), h * ((row + height) as f32)),
         }
+    }
+
+    fn show_timeline(&self, ui: &mut egui::Ui, recording: &Recording, root_placed: &PlacedProcess) {
+        // first pass: compute bounding box
+        let mut bounding_box = Rect::NOTHING;
+        root_placed.visit(&mut |placed, row| {
+            let proc_rect = self.proc_rect(row, placed.row_height, placed.time_bound.clone());
+            bounding_box |= proc_rect;
+        });
+
+        // allocate space and create painter
+        let (response, painter) = ui.allocate_painter(bounding_box.size(), Sense::empty());
+        let offset = response.rect.min.to_vec2();
+
+        // second pass: actually paint
+        // TODO keep animating this while the process is still running?
+        let text_color = ui.visuals().text_color();
+        let time_bound_end = *root_placed.time_bound.end();
+        root_placed.visit(&mut |placed, row| {
+            let proc = recording.processes.get(&placed.pid).unwrap();
+            let proc_time = proc.time_start..=proc.time_end.unwrap_or(time_bound_end);
+
+            // TODO draw header and background in separate colors
+            let proc_rect_header = self.proc_rect(row, 1, proc_time.clone()).translate(offset);
+            let proc_rect_full = self
+                .proc_rect(row, placed.row_height, placed.time_bound.clone())
+                .translate(offset);
+
+            // TODO better coloring
+            // TODO stroke around all children?
+            let color_scale = placed.depth as f32 / root_placed.max_depth as f32;
+            let color = Color32::from_gray((20.0 + (80.0 * color_scale)) as u8);
+            painter.rect(
+                proc_rect_full,
+                CornerRadiusF32::ZERO,
+                color,
+                Stroke::NONE,
+                StrokeKind::Inside,
+            );
+
+            let text = proc.execs.first().map(|exec| exec.path.as_str()).unwrap_or("?");
+            let text = text.rsplit_once("/").map(|(_, s)| s).unwrap_or(text);
+
+            let galley = painter.layout_no_wrap(text.to_owned(), FontId::default(), text_color);
+
+            let text_rect = galley.rect.translate(proc_rect_header.min.to_vec2());
+            if proc_rect_header.contains_rect(text_rect) {
+                painter.galley(proc_rect_header.min, galley, text_color);
+            }
+        });
     }
 }

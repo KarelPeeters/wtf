@@ -104,10 +104,11 @@ fn thread_collector(stopped: Arc<AtomicBool>, event_rx: Receiver<TraceEvent>, gu
             Err(RecvError) => break,
         }
         // batch collect all available events
+        let mut disconnected = false;
         match event_rx.try_recv() {
             Ok(event) => recording.report(event),
             Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => break,
+            Err(TryRecvError::Disconnected) => disconnected = true,
         }
 
         // compute a new mapping
@@ -121,5 +122,9 @@ fn thread_collector(stopped: Arc<AtomicBool>, event_rx: Receiver<TraceEvent>, gu
 
         *gui_handle.data_to_gui.lock().unwrap() = Some(data);
         gui_handle.ctx.request_repaint();
+
+        if disconnected {
+            break;
+        }
     }
 }

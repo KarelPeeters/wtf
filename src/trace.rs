@@ -17,6 +17,7 @@ use syscalls::Sysno;
 #[derive(Debug)]
 pub struct SpawnFailed(pub Errno);
 
+#[derive(Debug)]
 pub enum TraceEvent {
     ProcessStart {
         pid: Pid,

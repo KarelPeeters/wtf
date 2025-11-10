@@ -48,7 +48,7 @@ fn main() -> ExitCode {
     let _ = handle_collector.join();
 
     match record_result {
-        Ok(rec) => rec,
+        Ok(()) => {},
         Err(e) => {
             eprintln!("Failed to spawn child process: {}", e.0);
             return ExitCode::FAILURE;
@@ -76,10 +76,6 @@ unsafe fn thread_tracer(
         })
     };
     drop(event_tx);
-
-    if record_result.is_err() {
-        stopped.store(true, Ordering::Relaxed);
-    }
 
     record_result
 }

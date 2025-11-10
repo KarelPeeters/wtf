@@ -1,4 +1,4 @@
-use crate::trace::{ProcessExec, ProcessInfo, ProcessKind, Recording};
+use crate::record::{ProcessExec, ProcessInfo, ProcessKind, Recording};
 use crate::util::MapExt;
 use indexmap::IndexMap;
 use itertools::{Either, Itertools};
@@ -21,10 +21,12 @@ pub struct PlacedProcess {
     pub time_bound: RangeInclusive<f32>,
 }
 
-pub fn place_processes(rec: &Recording, include_threads: bool) -> PlacedProcess {
+pub fn place_processes(rec: &Recording, include_threads: bool) -> Option<PlacedProcess> {
     // TODO what about orphans?
-    let mut cache = TimeCache::new();
-    place_process(rec, include_threads, &mut cache, rec.root_pid, 0)
+    rec.root_pid.map(|root_pid| {
+        let mut cache = TimeCache::new();
+        place_process(rec, include_threads, &mut cache, root_pid, 0)
+    })
 }
 
 impl PlacedProcess {

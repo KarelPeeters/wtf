@@ -1,5 +1,5 @@
 use crate::layout::PlacedProcess;
-use crate::trace::Recording;
+use crate::record::Recording;
 use eframe::emath::{Pos2, Rect};
 use eframe::epaint::{Color32, CornerRadiusF32, FontId, Stroke, StrokeKind};
 use eframe::Frame;

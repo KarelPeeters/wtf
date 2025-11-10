@@ -1,66 +1,49 @@
 #![cfg(unix)]
 
+use crate::record::ProcessKind;
 use crate::util::MapExt;
-use indexmap::IndexMap;
 use nix::errno::Errno;
 use nix::libc;
 use nix::sys::signal::Signal;
 use nix::sys::wait::WaitStatus;
 use nix::sys::{ptrace, wait};
 use nix::unistd::{ForkResult, Pid};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::time::Instant;
 use syscalls::Sysno;
 
 #[derive(Debug)]
-pub struct Recording {
-    pub root_pid: Pid,
-    pub processes: IndexMap<Pid, ProcessInfo>,
-}
-
-#[derive(Debug)]
-pub struct ProcessInfo {
-    pub pid: Pid,
-
-    pub time_start: f32,
-    pub time_end: Option<f32>,
-
-    pub execs: Vec<ProcessExec>,
-    // note: children might be reported here before they actually exist as ProcessInfo entries
-    pub children: Vec<(ProcessKind, Pid)>,
-}
-
-#[derive(Debug, Copy, Clone, Eq, PartialEq)]
-pub enum ProcessKind {
-    Process,
-    Thread,
-}
-
-#[derive(Debug)]
-pub struct ProcessExec {
-    pub time: f32,
-    pub path: String,
-    pub argv: Vec<String>,
-}
-
-impl ProcessInfo {
-    pub fn new(pid: Pid, time_start: f32) -> Self {
-        Self {
-            pid,
-            time_start,
-            time_end: None,
-            execs: Vec::new(),
-            children: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug)]
 pub struct SpawnFailed(pub Errno);
 
+pub enum TraceEvent {
+    ProcessStart {
+        pid: Pid,
+        time: f32,
+    },
+    ProcessExit {
+        pid: Pid,
+        time: f32,
+    },
+    ProcessChild {
+        parent: Pid,
+        child: Pid,
+        kind: ProcessKind,
+    },
+    ProcessExec {
+        pid: Pid,
+        time: f32,
+        path: String,
+        argv: Vec<String>,
+    },
+}
+
 // TODO better error handling
-pub unsafe fn record_trace(child_path: &CStr, child_argv: &[CString]) -> Result<Recording, SpawnFailed> {
+pub unsafe fn record_trace(
+    child_path: &CStr,
+    child_argv: &[CString],
+    mut callback: impl FnMut(TraceEvent),
+) -> Result<(), SpawnFailed> {
     // start the child process
     let root_pid = unsafe {
         let fork_result = nix::unistd::fork().expect("failed fork");
@@ -93,23 +76,21 @@ pub unsafe fn record_trace(child_path: &CStr, child_argv: &[CString]) -> Result<
         | ptrace::Options::PTRACE_O_TRACEVFORK;
     ptrace::setoptions(root_pid, ptrace_options).expect("failed to set ptrace options");
 
+    // report initial process start
+    // TODO is this time info accurate enough?
+    let time_start = Instant::now();
+    callback(TraceEvent::ProcessStart {
+        pid: root_pid,
+        time: 0.0,
+    });
+
     // resume after earlier stop
     ptrace::syscall(root_pid, None).expect("failed initial ptrace resume");
 
-    // result data structure
-    // TODO extract this somewhere else, build this via a callback
-    // TODO is this time info accurate enough?
-    let time_start = Instant::now();
-    let mut recording = Recording {
-        root_pid,
-        processes: IndexMap::new(),
-    };
-    recording
-        .processes
-        .insert_first(root_pid, ProcessInfo::new(root_pid, 0.0));
-
     // track in-progress syscall per child
     let mut partial_syscalls: HashMap<Pid, SyscallEntry> = HashMap::new();
+    let mut active_processes: HashSet<Pid> = HashSet::new();
+    active_processes.insert(root_pid);
 
     // main tracing event loop
     let mut root_exec_any_success = false;
@@ -196,9 +177,11 @@ pub unsafe fn record_trace(child_path: &CStr, child_argv: &[CString]) -> Result<
                             SyscallEntry::Fork(fork_kind) => {
                                 println!("[{pid}] syscall exit fork-like");
                                 if info_exit.sval > 0 {
-                                    let process = recording.processes.get_mut(&pid).unwrap();
-                                    let child_pid = Pid::from_raw(info_exit.sval as i32);
-                                    process.children.push((fork_kind, child_pid));
+                                    callback(TraceEvent::ProcessChild {
+                                        parent: pid,
+                                        child: Pid::from_raw(info_exit.sval as i32),
+                                        kind: fork_kind,
+                                    });
                                 }
                             }
                             SyscallEntry::Exec(ref args) => {
@@ -215,12 +198,13 @@ pub unsafe fn record_trace(child_path: &CStr, child_argv: &[CString]) -> Result<
                                 }
 
                                 if info_exit.sval == 0 {
-                                    let proc_exec = ProcessExec {
+                                    // TODO populate arv
+                                    callback(TraceEvent::ProcessExec {
+                                        pid,
                                         time: time_start.elapsed().as_secs_f32(),
                                         path: String::from_utf8_lossy(&args.path).into_owned(),
                                         argv: vec![],
-                                    };
-                                    recording.processes.get_mut(&pid).unwrap().execs.push(proc_exec);
+                                    });
                                 }
                             }
                         }
@@ -236,7 +220,11 @@ pub unsafe fn record_trace(child_path: &CStr, child_argv: &[CString]) -> Result<
             WaitStatus::PtraceEvent(pid, _signal, _event) => Some(pid),
             // process exited, cleanup and maybe stop tracing
             WaitStatus::Exited(pid, _) | WaitStatus::Signaled(pid, _, _) => {
-                recording.processes.get_mut(&pid).unwrap().time_end = Some(time_start.elapsed().as_secs_f32());
+                callback(TraceEvent::ProcessExit {
+                    pid,
+                    time: time_start.elapsed().as_secs_f32(),
+                });
+
                 partial_syscalls.remove(&pid);
                 if pid == root_pid {
                     break;
@@ -245,10 +233,13 @@ pub unsafe fn record_trace(child_path: &CStr, child_argv: &[CString]) -> Result<
             }
             // stopped by some signal, just continue
             WaitStatus::Stopped(pid, signal) => {
-                if matches!(signal, Signal::SIGSTOP | Signal::SIGTRAP) && !recording.processes.contains_key(&pid) {
+                if matches!(signal, Signal::SIGSTOP | Signal::SIGTRAP) && !active_processes.contains(&pid) {
                     // initial stop for new child process, create it
-                    let proc_info = ProcessInfo::new(pid, time_start.elapsed().as_secs_f32());
-                    recording.processes.insert_first(pid, proc_info);
+                    callback(TraceEvent::ProcessStart {
+                        pid,
+                        time: time_start.elapsed().as_secs_f32(),
+                    });
+                    active_processes.insert(pid);
                 }
 
                 Some(pid)
@@ -269,7 +260,7 @@ pub unsafe fn record_trace(child_path: &CStr, child_argv: &[CString]) -> Result<
         return Err(SpawnFailed(err));
     }
 
-    Ok(recording)
+    Ok(())
 }
 
 pub unsafe fn run_child(child_path: &CStr, child_argv: &[CString]) -> Result<(), nix::Error> {

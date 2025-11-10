@@ -1,11 +1,13 @@
 use crate::layout::PlacedProcess;
-use crate::record::Recording;
+use crate::record::{ProcessKind, Recording};
+use crate::swriteln;
 use crossbeam::channel::Sender;
 use eframe::emath::{Pos2, Rect};
 use eframe::epaint::{Color32, CornerRadiusF32, FontId, Stroke, StrokeKind};
 use eframe::Frame;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
-use egui::{CentralPanel, Context, ScrollArea, Sense, SidePanel};
+use egui::{CentralPanel, Context, PointerButton, ScrollArea, Sense, SidePanel};
+use nix::unistd::Pid;
 use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex};
 
@@ -41,6 +43,7 @@ pub fn main_gui(channel: Sender<GuiHandle>) -> eframe::Result<()> {
                 data_to_gui,
                 data: None,
                 zoom_linear: 0.0,
+                selected_pid: None,
             }))
         }),
     )
@@ -49,7 +52,9 @@ pub fn main_gui(channel: Sender<GuiHandle>) -> eframe::Result<()> {
 struct App {
     data_to_gui: Arc<Mutex<Option<DataToGui>>>,
     data: Option<DataToGui>,
+
     zoom_linear: f32,
+    selected_pid: Option<Pid>,
 }
 
 impl eframe::App for App {
@@ -58,6 +63,60 @@ impl eframe::App for App {
         if let Some(new_data) = self.data_to_gui.lock().unwrap().take() {
             self.data = Some(new_data);
         }
+
+        if self.selected_pid.is_none()
+            && let Some(data) = &self.data
+            && let Some(root_pid) = data.recording.root_pid
+        {
+            self.selected_pid = Some(root_pid);
+        }
+
+        SidePanel::right("side_panel").show(ctx, |ui| {
+            let mut text = String::new();
+
+            if let Some(selected_pid) = self.selected_pid {
+                const I: &str = "    ";
+                swriteln!(text, "Selected process:");
+                swriteln!(text, "{I}pid: {}", selected_pid);
+
+                if let Some(data) = &self.data {
+                    if let Some(info) = data.recording.processes.get(&selected_pid) {
+                        let mut child_count_processes = 0;
+                        let mut child_count_threads = 0;
+                        for &(kind, _) in &info.children {
+                            match kind {
+                                ProcessKind::Process => child_count_processes += 1,
+                                ProcessKind::Thread => child_count_threads += 1,
+                            }
+                        }
+
+                        swriteln!(text, "{I}time_start: {}", info.time_start);
+                        swriteln!(text, "{I}time_end: {:?}", info.time_end);
+                        let duration = info.time_end.map(|time_end| time_end - info.time_start);
+                        swriteln!(text, "{I}duration: {:?}", duration);
+
+                        swriteln!(text, "{I}children: {}", child_count_processes);
+                        swriteln!(text, "{I}threads: {}", child_count_threads);
+
+                        swriteln!(text, "execs: {}", info.execs.len());
+
+                        for exec in &info.execs {
+                            swriteln!(text, "{I}{I}time: {}", exec.time);
+                            swriteln!(text, "{I}{I}path: {}", exec.path);
+
+                            swriteln!(text, "{I}{I}argv:");
+                            for arg in &exec.argv {
+                                swriteln!(text, "{I}{I}{I}{}", arg);
+                            }
+                        }
+                    }
+                }
+            } else {
+                swriteln!(text, "No process selected");
+            }
+
+            ui.label(text);
+        });
 
         CentralPanel::default().show(ctx, |ui| {
             ScrollArea::both()
@@ -73,7 +132,9 @@ impl eframe::App for App {
                         return;
                     };
 
-                    self.show_timeline(ui, recording, root_placed);
+                    if let Some(clicked_pid) = self.show_timeline(ui, recording, root_placed) {
+                        self.selected_pid = Some(clicked_pid);
+                    }
 
                     // handle zoom events
                     // TODO can/should we move this earlier?
@@ -82,7 +143,6 @@ impl eframe::App for App {
                         let delta = ui.input(|input| input.raw_scroll_delta);
                         self.zoom_linear += delta.y;
                     }
-
                 });
         });
     }
@@ -99,7 +159,7 @@ impl App {
         }
     }
 
-    fn show_timeline(&self, ui: &mut egui::Ui, recording: &Recording, root_placed: &PlacedProcess) {
+    fn show_timeline(&self, ui: &mut egui::Ui, recording: &Recording, root_placed: &PlacedProcess) -> Option<Pid> {
         // first pass: compute bounding box
         let mut bounding_box = Rect::NOTHING;
         root_placed.visit(&mut |placed, row| {
@@ -108,13 +168,15 @@ impl App {
         });
 
         // allocate space and create painter
-        let (response, painter) = ui.allocate_painter(bounding_box.size(), Sense::empty());
+        let (response, painter) = ui.allocate_painter(bounding_box.size(), Sense::click());
         let offset = response.rect.min.to_vec2();
 
-        // second pass: actually paint
+        // second pass: actually paint (and collect click events)
         // TODO keep animating this while the process is still running?
         let text_color = ui.visuals().text_color();
         let time_bound_end = *root_placed.time_bound.end();
+        let mut last_clicked_pid = None;
+
         root_placed.visit(&mut |placed, row| {
             let proc = recording.processes.get(&placed.pid).unwrap();
             let proc_time = proc.time_start..=proc.time_end.unwrap_or(time_bound_end);
@@ -125,17 +187,22 @@ impl App {
                 .proc_rect(row, placed.row_height, placed.time_bound.clone())
                 .translate(offset);
 
+            let pointer_in_rect = ui.rect_contains_pointer(proc_rect_full);
+            if pointer_in_rect && response.clicked_by(PointerButton::Primary) {
+                last_clicked_pid = Some(proc.pid);
+            }
+
+            let stroke = if pointer_in_rect || self.selected_pid == Some(proc.pid) {
+                Stroke::new(1.0, text_color)
+            } else {
+                Stroke::NONE
+            };
+
             // TODO better coloring
             // TODO stroke around all children?
             let color_scale = placed.depth as f32 / root_placed.max_depth as f32;
             let color = Color32::from_gray((20.0 + (80.0 * color_scale)) as u8);
-            painter.rect(
-                proc_rect_full,
-                CornerRadiusF32::ZERO,
-                color,
-                Stroke::NONE,
-                StrokeKind::Inside,
-            );
+            painter.rect(proc_rect_full, CornerRadiusF32::ZERO, color, stroke, StrokeKind::Inside);
 
             let text = proc.execs.first().map(|exec| exec.path.as_str()).unwrap_or("?");
             let text = text.rsplit_once("/").map(|(_, s)| s).unwrap_or(text);
@@ -147,5 +214,7 @@ impl App {
                 painter.galley(proc_rect_header.min, galley, text_color);
             }
         });
+
+        last_clicked_pid
     }
 }

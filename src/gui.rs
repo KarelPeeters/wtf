@@ -7,7 +7,7 @@ use eframe::epaint::{Color32, CornerRadiusF32, FontId, Stroke, StrokeKind};
 use eframe::Frame;
 use egui::ecolor::Hsva;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
-use egui::{CentralPanel, Context, PointerButton, ScrollArea, Sense, SidePanel, Vec2};
+use egui::{CentralPanel, Context, Key, PointerButton, ScrollArea, Sense, SidePanel, Vec2};
 use egui_theme_switch::global_theme_switch;
 use itertools::enumerate;
 use nix::unistd::Pid;
@@ -57,6 +57,7 @@ struct App {
     show_threads: bool,
 
     zoom_linear: Vec2,
+    zoom_auto_hor: bool,
 
     selected_pid: Option<Pid>,
     hovered_pid: Option<Pid>,
@@ -69,6 +70,7 @@ impl App {
             data: None,
             color_settings: ColorSettings::new(),
             zoom_linear: Vec2::ZERO,
+            zoom_auto_hor: true,
             show_threads: false,
             selected_pid: None,
             hovered_pid: None,
@@ -120,7 +122,7 @@ impl eframe::App for App {
             ScrollArea::both()
                 .scroll_bar_visibility(ScrollBarVisibility::AlwaysVisible)
                 .scroll_source(ScrollSource::SCROLL_BAR | ScrollSource::DRAG)
-                .show(ui, |ui| {
+                .show_viewport(ui, |ui, viewport| {
                     ui.take_available_space();
 
                     let Some(DataToGui {
@@ -140,54 +142,56 @@ impl eframe::App for App {
                         return;
                     };
 
-                    if let Some(pointer_pid_info) = self.show_timeline(ui, recording, root_placed) {
-                        self.hovered_pid = Some(pointer_pid_info.pid);
-                        if pointer_pid_info.clicked {
-                            self.selected_pid = Some(pointer_pid_info.pid);
+                    self.hovered_pid = None;
+                    if let Some(timeline_info) = self.show_timeline(ui, recording, root_placed) {
+                        // handle hover/click
+                        if let Some(pointer_pid_info) = timeline_info.pointer_pid_info {
+                            self.hovered_pid = Some(pointer_pid_info.pid);
+                            if pointer_pid_info.clicked {
+                                self.selected_pid = Some(pointer_pid_info.pid);
+                            }
                         }
-                    } else {
-                        self.hovered_pid = None;
+
+                        // handle autozoom
+                        if self.zoom_auto_hor {
+                            let factor = viewport.width() / timeline_info.bounding_box.width();
+                            if factor.is_finite() && (1.0 - factor).abs() > 0.0001 {
+                                self.zoom_linear.x += zoom_factor_to_linear(factor);
+                            }
+                        }
                     }
 
                     // handle zoom events
                     // TODO can/should we move this earlier?
                     // TODO keep mouse position stable when zooming
                     if ui.is_enabled() && ui.rect_contains_pointer(ui.min_rect()) {
-                        let (mod_ctrl, delta_raw) = ui.input(|input| (input.modifiers.ctrl, input.raw_scroll_delta));
+                        let (delta_raw, mod_ctrl, key_a) = ui
+                            .input(|input| (input.raw_scroll_delta, input.modifiers.ctrl, input.key_released(Key::A)));
+
                         let delta = if mod_ctrl { delta_raw.yx() } else { delta_raw };
                         self.zoom_linear += delta.yx();
+
+                        if delta != Vec2::ZERO {
+                            self.zoom_auto_hor = false;
+                        }
+
+                        if key_a {
+                            self.zoom_auto_hor = true;
+                        }
                     }
                 });
         });
     }
 }
 
+struct TimeLineInfo {
+    bounding_box: Rect,
+    pointer_pid_info: Option<PointerPidInfo>,
+}
+
 struct PointerPidInfo {
     pid: Pid,
     clicked: bool,
-}
-
-struct ProcRectParams {
-    time_now: f32,
-    zoom_factor: Vec2,
-}
-
-impl ProcRectParams {
-    pub fn new(time_now: f32, zoom_linear: Vec2) -> Self {
-        let zoom_factor = Vec2::new((zoom_linear.x / 50.0).exp(), (zoom_linear.y / 50.0).exp());
-        ProcRectParams { time_now, zoom_factor }
-    }
-
-    pub fn proc_rect(&self, time: TimeRange, row: usize, height: usize) -> Rect {
-        let time_end = time.end.unwrap_or(self.time_now);
-        let w = 200.0 * self.zoom_factor.x;
-        let h = 20.0 * self.zoom_factor.y;
-
-        Rect {
-            min: Pos2::new(w * time.start, h * (row as f32)),
-            max: Pos2::new(w * time_end, h * ((row + height) as f32)),
-        }
-    }
 }
 
 impl App {
@@ -196,7 +200,7 @@ impl App {
         ui: &mut egui::Ui,
         recording: &Recording,
         root_placed: &PlacedProcess,
-    ) -> Option<PointerPidInfo> {
+    ) -> Option<TimeLineInfo> {
         // decide current time, used to extend unfinished process ends
         let time_now = match root_placed.time_bound.end {
             Some(time_end) => time_end,
@@ -311,7 +315,10 @@ impl App {
             },
         );
 
-        pointer_pid_info
+        Some(TimeLineInfo {
+            bounding_box,
+            pointer_pid_info,
+        })
     }
 
     fn selected_pid_info(&self) -> String {
@@ -360,6 +367,42 @@ impl App {
 
         text
     }
+}
+
+struct ProcRectParams {
+    time_now: f32,
+    zoom_factor: Vec2,
+}
+
+impl ProcRectParams {
+    pub fn new(time_now: f32, zoom_linear: Vec2) -> Self {
+        let zoom_factor = Vec2::new(
+            zoom_linear_to_factor(zoom_linear.x),
+            zoom_linear_to_factor(zoom_linear.y),
+        );
+        ProcRectParams { time_now, zoom_factor }
+    }
+
+    pub fn proc_rect(&self, time: TimeRange, row: usize, height: usize) -> Rect {
+        let time_end = time.end.unwrap_or(self.time_now);
+        let w = 200.0 * self.zoom_factor.x;
+        let h = 20.0 * self.zoom_factor.y;
+
+        Rect {
+            min: Pos2::new(w * time.start, h * (row as f32)),
+            max: Pos2::new(w * time_end, h * ((row + height) as f32)),
+        }
+    }
+}
+
+const ZOOM_MULTIPLIER: f32 = 50.0;
+
+fn zoom_linear_to_factor(zoom_linear: f32) -> f32 {
+    (zoom_linear / ZOOM_MULTIPLIER).exp()
+}
+
+fn zoom_factor_to_linear(zoom_factor: f32) -> f32 {
+    zoom_factor.ln() * ZOOM_MULTIPLIER
 }
 
 struct ColorSettings {

@@ -9,6 +9,7 @@ use egui::ecolor::Hsva;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
 use egui::{CentralPanel, Context, PointerButton, ScrollArea, Sense, SidePanel};
 use egui_theme_switch::global_theme_switch;
+use itertools::enumerate;
 use nix::unistd::Pid;
 use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex};
@@ -84,31 +85,36 @@ impl eframe::App for App {
         }
 
         SidePanel::right("side_panel").show(ctx, |ui| {
-            ui.take_available_space();
+            ScrollArea::vertical().show(ui, |ui| {
+                ui.take_available_space();
 
-            ui.heading("Settings");
-            global_theme_switch(ui);
-            ui.checkbox(&mut self.show_threads, "Show threads");
+                ui.heading("Settings");
+                global_theme_switch(ui);
+                ui.checkbox(&mut self.show_threads, "Show threads");
 
-            ui.separator();
-            ui.heading("Colors");
-            ui.add(egui::Slider::new(&mut self.color_settings.hue_sat, 0.0..=1.0).text("Hue saturation"));
-            ui.add(egui::Slider::new(&mut self.color_settings.val_header_dark, 0.0..=1.0).text("Value Header (dark)"));
-            ui.add(
-                egui::Slider::new(&mut self.color_settings.val_background_dark, 0.0..=1.0)
-                    .text("Value Background (dark)"),
-            );
-            ui.add(
-                egui::Slider::new(&mut self.color_settings.val_header_light, 0.0..=1.0).text("Value Header (light)"),
-            );
-            ui.add(
-                egui::Slider::new(&mut self.color_settings.val_background_light, 0.0..=1.0)
-                    .text("Value Background (light)"),
-            );
+                ui.separator();
+                ui.heading("Colors");
+                ui.add(egui::Slider::new(&mut self.color_settings.hue_sat, 0.0..=1.0).text("Hue saturation"));
+                ui.add(
+                    egui::Slider::new(&mut self.color_settings.val_header_dark, 0.0..=1.0).text("Value Header (dark)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.color_settings.val_background_dark, 0.0..=1.0)
+                        .text("Value Background (dark)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.color_settings.val_header_light, 0.0..=1.0)
+                        .text("Value Header (light)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.color_settings.val_background_light, 0.0..=1.0)
+                        .text("Value Background (light)"),
+                );
 
-            ui.separator();
-            ui.heading("Process info");
-            ui.label(self.selected_pid_info());
+                ui.separator();
+                ui.heading("Process info");
+                ui.label(self.selected_pid_info());
+            });
         });
 
         CentralPanel::default().show(ctx, |ui| {
@@ -302,15 +308,17 @@ impl App {
                 swriteln!(text, "{I}children: {}", child_count_processes);
                 swriteln!(text, "{I}threads: {}", child_count_threads);
 
-                swriteln!(text, "execs: {}", info.execs.len());
+                swriteln!(text, "{I}execs: {}", info.execs.len());
 
-                for exec in &info.execs {
-                    swriteln!(text, "{I}{I}time: {}", exec.time);
-                    swriteln!(text, "{I}{I}path: {}", exec.path);
+                for (i_exec, exec) in enumerate(&info.execs) {
+                    swriteln!(text, "{I}{I}{i_exec}");
 
-                    swriteln!(text, "{I}{I}argv:");
+                    swriteln!(text, "{I}{I}{I}time: {}", exec.time);
+                    swriteln!(text, "{I}{I}{I}path: {}", exec.path);
+
+                    swriteln!(text, "{I}{I}{I}argv:");
                     for arg in &exec.argv {
-                        swriteln!(text, "{I}{I}{I}{}", arg);
+                        swriteln!(text, "{I}{I}{I}{I}{}", arg);
                     }
                 }
             }

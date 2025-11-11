@@ -30,16 +30,26 @@ pub fn place_processes(rec: &Recording, include_threads: bool) -> Option<PlacedP
 }
 
 impl PlacedProcess {
-    pub fn visit(&self, f: &mut impl FnMut(&PlacedProcess, usize)) {
-        fn visit_impl(slf: &PlacedProcess, offset_start: usize, f: &mut impl FnMut(&PlacedProcess, usize)) {
+    pub fn visit<R>(
+        &self,
+        mut f_before: impl FnMut(&PlacedProcess, usize) -> R,
+        mut f_after: impl FnMut(&PlacedProcess, usize, R),
+    ) {
+        fn visit_impl<R>(
+            slf: &PlacedProcess,
+            offset_start: usize,
+            f_before: &mut impl FnMut(&PlacedProcess, usize) -> R,
+            f_after: &mut impl FnMut(&PlacedProcess, usize, R),
+        ) {
             let offset = offset_start + slf.row_offset;
-            f(slf, offset);
+            let r = f_before(slf, offset);
             for child in &slf.children {
-                visit_impl(child, offset, f);
+                visit_impl(child, offset, f_before, f_after);
             }
+            f_after(slf, offset, r);
         }
 
-        visit_impl(self, 0, f)
+        visit_impl(self, 0, &mut f_before, &mut f_after);
     }
 }
 

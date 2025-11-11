@@ -179,10 +179,13 @@ impl App {
     ) -> Option<PointerPidInfo> {
         // first pass: compute bounding box
         let mut bounding_box = Rect::NOTHING;
-        root_placed.visit(&mut |placed, row| {
-            let proc_rect = self.proc_rect(row, placed.row_height, placed.time_bound.clone());
-            bounding_box |= proc_rect;
-        });
+        root_placed.visit(
+            |_, _| {},
+            |placed, row, ()| {
+                let proc_rect = self.proc_rect(row, placed.row_height, placed.time_bound.clone());
+                bounding_box |= proc_rect;
+            },
+        );
 
         // allocate space and create painter
         let (response, painter) = ui.allocate_painter(bounding_box.size(), Sense::click());
@@ -194,58 +197,70 @@ impl App {
         let time_bound_end = *root_placed.time_bound.end();
         let mut pointer_pid_info = None;
 
-        root_placed.visit(&mut |placed, row| {
-            let proc = recording.processes.get(&placed.pid).unwrap();
-            let proc_time = proc.time_start..=proc.time_end.unwrap_or(time_bound_end);
+        root_placed.visit(
+            |placed, row| {
+                // draw background/header and handle interactions
+                let proc = recording.processes.get(&placed.pid).unwrap();
+                let proc_time = proc.time_start..=proc.time_end.unwrap_or(time_bound_end);
 
-            // TODO draw header and background in separate colors
-            let proc_rect_header = self.proc_rect(row, 1, proc_time.clone()).translate(offset);
-            let proc_rect_full = self
-                .proc_rect(row, placed.row_height, placed.time_bound.clone())
-                .translate(offset);
+                let rect_header = self.proc_rect(row, 1, proc_time.clone()).translate(offset);
+                let rect_full = self
+                    .proc_rect(row, placed.row_height, placed.time_bound.clone())
+                    .translate(offset);
 
-            let pointer_in_rect = ui.rect_contains_pointer(proc_rect_full);
-            if pointer_in_rect {
-                pointer_pid_info = Some(PointerPidInfo {
-                    pid: proc.pid,
-                    clicked: response.clicked_by(PointerButton::Primary),
-                });
-            }
+                let pointer_in_rect = ui.rect_contains_pointer(rect_full);
+                if pointer_in_rect {
+                    pointer_pid_info = Some(PointerPidInfo {
+                        pid: proc.pid,
+                        clicked: response.clicked_by(PointerButton::Primary),
+                    });
+                }
 
-            let text = proc.execs.first().map(|exec| exec.path.as_str()).unwrap_or("?");
-            let text = text.rsplit_once("/").map(|(_, s)| s).unwrap_or(text);
+                let text = proc.execs.first().map(|exec| exec.path.as_str()).unwrap_or("?");
+                let text = text.rsplit_once("/").map(|(_, s)| s).unwrap_or(text);
+                let colors = get_process_color(&self.color_settings, ui.visuals().dark_mode, text);
 
-            let colors = get_process_color(&self.color_settings, ui.visuals().dark_mode, text);
+                // TODO separate stoke color, even more consisting than header itself
+                let stroke_color = if pointer_in_rect || self.selected_pid == Some(proc.pid) {
+                    text_color
+                } else {
+                    colors.header
+                };
 
-            // TODO separate stoke color, even more consisting than header itself
-            let stroke_color = if pointer_in_rect || self.selected_pid == Some(proc.pid) {
-                text_color
-            } else {
-                colors.header
-            };
+                painter.rect(
+                    rect_full,
+                    CornerRadiusF32::ZERO,
+                    colors.background,
+                    Stroke::NONE,
+                    StrokeKind::Inside,
+                );
+                painter.rect(
+                    rect_header,
+                    CornerRadiusF32::ZERO,
+                    colors.header,
+                    Stroke::NONE,
+                    StrokeKind::Inside,
+                );
 
-            painter.rect(
-                proc_rect_full,
-                CornerRadiusF32::ZERO,
-                colors.background,
-                Stroke::new(1.0, stroke_color),
-                StrokeKind::Inside,
-            );
-            painter.rect(
-                proc_rect_header,
-                CornerRadiusF32::ZERO,
-                colors.header,
-                Stroke::NONE,
-                StrokeKind::Inside,
-            );
+                // TODO only do text stuff if the rect is visible
+                let galley = painter.layout_no_wrap(text.to_owned(), FontId::default(), text_color);
+                let rect_text = galley.rect.translate(rect_header.min.to_vec2());
+                if rect_header.contains_rect(rect_text) {
+                    painter.galley(rect_header.min, galley, text_color);
+                }
 
-            let galley = painter.layout_no_wrap(text.to_owned(), FontId::default(), text_color);
-
-            let text_rect = galley.rect.translate(proc_rect_header.min.to_vec2());
-            if proc_rect_header.contains_rect(text_rect) {
-                painter.galley(proc_rect_header.min, galley, text_color);
-            }
-        });
+                (rect_full, stroke_color)
+            },
+            |_, _, (rect_full, stroke_color)| {
+                // draw background stroke, on top of any children
+                painter.rect_stroke(
+                    rect_full,
+                    CornerRadiusF32::ZERO,
+                    Stroke::new(1.0, stroke_color),
+                    StrokeKind::Inside,
+                );
+            },
+        );
 
         pointer_pid_info
     }

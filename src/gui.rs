@@ -397,11 +397,30 @@ fn get_process_color(settings: &ColorSettings, dark_mode: bool, name: &str) -> P
 }
 
 fn get_process_hue(name: &str) -> Option<f32> {
+    #[rustfmt::skip]
     let map: &[(&[&str], f32)] = &[
+        // General-purpose build tools
+        (&["make", "cmake", "ninja"], 50.0),
+        // Shells
+        (&["bash", "sh", "zsh", "fish", "dash"], 120.0),
+        // EDA tooling
+        (
+            &[
+                // modelsim
+                "qrun", "vlog", "vcom", "vopt", "vsim",
+                // xcelium
+                "xrun", "xmvlog", "xmvhdl", "xelab", "xmsim",
+                // other 
+                "vivado",
+            ],
+            280.0,
+        ),
+        // Software languages
         (&["python"], 206.44),
         (&["rustc", "cargo"], 14.92),
+        (&["ruby"], 3.8),
+        //   (put C/C++ last due to short names with lots of collisions)
         (&["clang", "gcc", "g++", "c++", "cc", "ar"], 205.77),
-        (&["make", "cmake"], 50.0),
     ];
 
     for &(list, hue) in map {

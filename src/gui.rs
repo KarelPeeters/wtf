@@ -225,20 +225,32 @@ impl App {
         let (response, painter) = ui.allocate_painter(bounding_box.size(), Sense::click());
         let offset = response.rect.min.to_vec2();
 
-        // second pass: actually paint (and collect click events)
+        // figure out a minimum text width to early-skip text layout
+        let text_font = &FontId::default();
         let text_color = ui.visuals().text_color();
+        let text_min_char_width = painter
+            .layout_no_wrap("l".to_owned(), text_font.clone(), text_color)
+            .size()
+            .x;
+
+        // second pass: actually paint (and collect click events)
         let mut pointer_pid_info = None;
 
         root_placed.visit(
+            // before: draw background/header and handle interactions
             |placed, row| {
-                // draw background/header and handle interactions
                 let proc = recording.processes.get(&placed.pid).unwrap();
 
-                let rect_header = rect_params.proc_rect(proc.time, row, 1).translate(offset);
+                // calculate bounding rects and skip if not visible
                 let rect_full = rect_params
                     .proc_rect(placed.time_bound, row, placed.row_height)
                     .translate(offset);
+                if !ui.is_rect_visible(rect_full) {
+                    return None;
+                }
+                let rect_header = rect_params.proc_rect(proc.time, row, 1).translate(offset);
 
+                // handle hover/click
                 let pointer_in_rect = ui.rect_contains_pointer(rect_full);
                 if pointer_in_rect {
                     pointer_pid_info = Some(PointerPidInfo {
@@ -247,6 +259,7 @@ impl App {
                     });
                 }
 
+                // figure out text, it influences the color
                 let text = proc.execs.last().map(|exec| exec.path.as_str()).unwrap_or("?");
                 let text = text.rsplit_once("/").map(|(_, s)| s).unwrap_or(text);
                 let colors = get_process_color(&self.color_settings, ui.visuals().dark_mode, text);
@@ -258,6 +271,7 @@ impl App {
                     colors.header
                 };
 
+                // draw rects
                 painter.rect(
                     rect_full,
                     CornerRadiusF32::ZERO,
@@ -273,23 +287,27 @@ impl App {
                     StrokeKind::Inside,
                 );
 
-                // TODO only do text stuff if the rect is visible
-                let galley = painter.layout_no_wrap(text.to_owned(), FontId::default(), text_color);
-                let rect_text = galley.rect.translate(rect_header.min.to_vec2());
-                if rect_header.contains_rect(rect_text) {
-                    painter.galley(rect_header.min, galley, text_color);
+                // draw the text if it fits in the rectangle
+                if rect_header.width() >= text_min_char_width * (text.len() as f32) {
+                    let galley = painter.layout_no_wrap(text.to_owned(), text_font.clone(), text_color);
+                    let rect_text = galley.rect.translate(rect_header.min.to_vec2());
+                    if rect_header.contains_rect(rect_text) {
+                        painter.galley(rect_header.min, galley, text_color);
+                    }
                 }
 
-                (rect_full, stroke_color)
+                Some((rect_full, stroke_color))
             },
-            |_, _, (rect_full, stroke_color)| {
-                // draw background stroke, on top of any children
-                painter.rect_stroke(
-                    rect_full,
-                    CornerRadiusF32::ZERO,
-                    Stroke::new(1.0, stroke_color),
-                    StrokeKind::Inside,
-                );
+            // after: draw background stroke, on top of any children
+            |_, _, info| {
+                if let Some((rect_full, stroke_color)) = info {
+                    painter.rect_stroke(
+                        rect_full,
+                        CornerRadiusF32::ZERO,
+                        Stroke::new(1.0, stroke_color),
+                        StrokeKind::Inside,
+                    );
+                }
             },
         );
 

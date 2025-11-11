@@ -43,6 +43,12 @@ pub enum ProcessKind {
     Thread,
 }
 
+#[derive(Debug, Copy, Clone)]
+pub struct ChildCounts {
+    pub processes: usize,
+    pub threads: usize,
+}
+
 impl Recording {
     pub fn new() -> Self {
         Self {
@@ -83,6 +89,33 @@ impl Recording {
             TraceEvent::ProcessExec { pid, time, path, argv } => {
                 let exec = ProcessExec { time, path, argv };
                 self.processes.get_mut(&pid).unwrap().execs.push(exec);
+            }
+        }
+    }
+
+    pub fn child_counts(&self, pid: Pid) -> ChildCounts {
+        let mut counts = ChildCounts {
+            processes: 0,
+            threads: 0,
+        };
+        self.for_each_process_child(pid, &mut |kind, _| match kind {
+            ProcessKind::Process => counts.processes += 1,
+            ProcessKind::Thread => counts.threads += 1,
+        });
+        counts
+    }
+
+    pub fn for_each_process_child(&self, start: Pid, f: &mut impl FnMut(ProcessKind, Pid)) {
+        if let Some(info) = self.processes.get(&start) {
+            for &(child_kind, child_pid) in &info.children {
+                // visit the child itself
+                f(child_kind, child_pid);
+
+                // stop recursing at processes, recurse through threads
+                match child_kind {
+                    ProcessKind::Process => {}
+                    ProcessKind::Thread => self.for_each_process_child(child_pid, f),
+                }
             }
         }
     }

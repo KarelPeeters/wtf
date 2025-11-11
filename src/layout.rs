@@ -57,17 +57,12 @@ fn place_process(rec: &Recording, include_threads: bool, cache: &mut TimeCache, 
         Either::Left(info.children.iter().map(|&(_, c)| c))
     } else {
         let mut children = vec![];
-        fn f(rec: &Recording, children: &mut Vec<Pid>, curr: Pid) {
-            if let Some(info) = rec.processes.get(&curr) {
-                for &(child_kind, child_pid) in &info.children {
-                    match child_kind {
-                        ProcessKind::Process => children.push(child_pid),
-                        ProcessKind::Thread => f(rec, children, child_pid),
-                    }
-                }
+        rec.for_each_process_child(pid, &mut |kind, child_pid| {
+            match kind {
+                ProcessKind::Process => children.push(child_pid),
+                ProcessKind::Thread => { /* skip threads */ }
             }
-        }
-        f(rec, &mut children, pid);
+        });
         Either::Right(children.into_iter())
     };
 

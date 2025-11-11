@@ -1,5 +1,5 @@
 use crate::layout::PlacedProcess;
-use crate::record::{ProcessKind, Recording, TimeRange};
+use crate::record::{Recording, TimeRange};
 use crate::swriteln;
 use crossbeam::channel::Sender;
 use eframe::emath::{Pos2, Rect};
@@ -315,22 +315,14 @@ impl App {
 
         if let Some(data) = &self.data {
             if let Some(info) = data.recording.processes.get(&pid) {
-                let mut child_count_processes = 0;
-                let mut child_count_threads = 0;
-                for &(kind, _) in &info.children {
-                    match kind {
-                        ProcessKind::Process => child_count_processes += 1,
-                        ProcessKind::Thread => child_count_threads += 1,
-                    }
-                }
-
                 swriteln!(text, "{I}time_start: {}", info.time.start);
                 swriteln!(text, "{I}time_end: {:?}", info.time.end);
                 let duration = info.time.end.map(|time_end| time_end - info.time.start);
                 swriteln!(text, "{I}duration: {:?}", duration);
 
-                swriteln!(text, "{I}children: {}", child_count_processes);
-                swriteln!(text, "{I}threads: {}", child_count_threads);
+                let child_counts = data.recording.child_counts(pid);
+                swriteln!(text, "{I}children: {}", child_counts.processes);
+                swriteln!(text, "{I}threads: {}", child_counts.threads);
 
                 swriteln!(text, "{I}execs: {}", info.execs.len());
 

@@ -7,7 +7,7 @@ use eframe::epaint::{Color32, CornerRadiusF32, FontId, Stroke, StrokeKind};
 use eframe::Frame;
 use egui::ecolor::Hsva;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
-use egui::{CentralPanel, Context, PointerButton, ScrollArea, Sense, SidePanel};
+use egui::{CentralPanel, Context, PointerButton, ScrollArea, Sense, SidePanel, Vec2};
 use egui_theme_switch::global_theme_switch;
 use itertools::enumerate;
 use nix::unistd::Pid;
@@ -54,9 +54,9 @@ struct App {
     data: Option<DataToGui>,
 
     color_settings: ColorSettings,
-
-    zoom_linear: f32,
     show_threads: bool,
+
+    zoom_linear: Vec2,
 
     selected_pid: Option<Pid>,
     hovered_pid: Option<Pid>,
@@ -68,7 +68,7 @@ impl App {
             data_to_gui: Arc::new(Mutex::new(None)),
             data: None,
             color_settings: ColorSettings::new(),
-            zoom_linear: 0.0,
+            zoom_linear: Vec2::ZERO,
             show_threads: false,
             selected_pid: None,
             hovered_pid: None,
@@ -153,8 +153,9 @@ impl eframe::App for App {
                     // TODO can/should we move this earlier?
                     // TODO keep mouse position stable when zooming
                     if ui.is_enabled() && ui.rect_contains_pointer(ui.min_rect()) {
-                        let delta = ui.input(|input| input.raw_scroll_delta);
-                        self.zoom_linear += delta.y;
+                        let (mod_ctrl, delta_raw) = ui.input(|input| (input.modifiers.ctrl, input.raw_scroll_delta));
+                        let delta = if mod_ctrl { delta_raw.yx() } else { delta_raw };
+                        self.zoom_linear += delta.yx();
                     }
                 });
         });
@@ -166,18 +167,30 @@ struct PointerPidInfo {
     clicked: bool,
 }
 
-impl App {
-    fn proc_rect(&self, row: usize, height: usize, time_now: f32, time: TimeRange) -> Rect {
-        let h = 20.0;
-        let w = 200.0 * (self.zoom_linear / 100.0).exp();
+struct ProcRectParams {
+    time_now: f32,
+    zoom_factor: Vec2,
+}
 
-        let time_end = time.end.unwrap_or(time_now);
+impl ProcRectParams {
+    pub fn new(time_now: f32, zoom_linear: Vec2) -> Self {
+        let zoom_factor = Vec2::new((zoom_linear.x / 50.0).exp(), (zoom_linear.y / 50.0).exp());
+        ProcRectParams { time_now, zoom_factor }
+    }
+
+    pub fn proc_rect(&self, time: TimeRange, row: usize, height: usize) -> Rect {
+        let time_end = time.end.unwrap_or(self.time_now);
+        let w = 200.0 * self.zoom_factor.x;
+        let h = 20.0 * self.zoom_factor.y;
+
         Rect {
             min: Pos2::new(w * time.start, h * (row as f32)),
             max: Pos2::new(w * time_end, h * ((row + height) as f32)),
         }
     }
+}
 
+impl App {
     fn show_timeline(
         &self,
         ui: &mut egui::Ui,
@@ -198,11 +211,12 @@ impl App {
         };
 
         // first pass: compute bounding box
+        let rect_params = ProcRectParams::new(time_now, self.zoom_linear);
         let mut bounding_box = Rect::NOTHING;
         root_placed.visit(
             |_, _| {},
             |placed, row, ()| {
-                let proc_rect = self.proc_rect(row, placed.row_height, time_now, placed.time_bound);
+                let proc_rect = rect_params.proc_rect(placed.time_bound, row, placed.row_height);
                 bounding_box |= proc_rect;
             },
         );
@@ -212,7 +226,6 @@ impl App {
         let offset = response.rect.min.to_vec2();
 
         // second pass: actually paint (and collect click events)
-        // TODO keep animating this while the process is still running?
         let text_color = ui.visuals().text_color();
         let mut pointer_pid_info = None;
 
@@ -221,9 +234,9 @@ impl App {
                 // draw background/header and handle interactions
                 let proc = recording.processes.get(&placed.pid).unwrap();
 
-                let rect_header = self.proc_rect(row, 1, time_now, proc.time).translate(offset);
-                let rect_full = self
-                    .proc_rect(row, placed.row_height, time_now, proc.time)
+                let rect_header = rect_params.proc_rect(proc.time, row, 1).translate(offset);
+                let rect_full = rect_params
+                    .proc_rect(placed.time_bound, row, placed.row_height)
                     .translate(offset);
 
                 let pointer_in_rect = ui.rect_contains_pointer(rect_full);

@@ -54,6 +54,7 @@ struct App {
     data: Option<DataToGui>,
 
     color_settings: ColorSettings,
+
     zoom_linear: f32,
     show_threads: bool,
 
@@ -364,11 +365,16 @@ fn get_process_color(settings: &ColorSettings, dark_mode: bool, name: &str) -> P
 }
 
 fn get_process_hue(name: &str) -> Option<f32> {
-    let map: &[(&[&str], f32)] = &[(&["python"], 206.44), (&["rustc", "cargo"], 14.92)];
+    let map: &[(&[&str], f32)] = &[
+        (&["python"], 206.44),
+        (&["rustc", "cargo"], 14.92),
+        (&["clang", "gcc", "g++", "c++", "cc", "ar"], 205.77),
+        (&["make", "cmake"], 50.0),
+    ];
 
     for &(list, hue) in map {
         if list.iter().any(|s| name.contains(s)) {
-            return Some(hue);
+            return Some(hue / 360.0);
         }
     }
     None

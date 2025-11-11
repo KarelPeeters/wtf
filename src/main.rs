@@ -100,12 +100,14 @@ fn thread_collector(stopped: Arc<AtomicBool>, event_rx: Receiver<TraceEvent>, gu
             Err(RecvError) => break,
         }
         // batch collect all available events
-        let mut disconnected = false;
-        match event_rx.try_recv() {
-            Ok(event) => recording.report(event),
-            Err(TryRecvError::Empty) => {}
-            Err(TryRecvError::Disconnected) => disconnected = true,
-        }
+        // (we can't exit immediately on disconnect, we want to send the last remaining data first)
+        let disconnected = loop {
+            match event_rx.try_recv() {
+                Ok(event) => recording.report(event),
+                Err(TryRecvError::Empty) => break false,
+                Err(TryRecvError::Disconnected) => break true,
+            }
+        };
 
         // compute a new mapping
         // TODO make thread inclusion configurable from the GUI

@@ -122,7 +122,7 @@ pub unsafe fn record_trace_impl(
         let status = wait::waitpid(None, None).expect("failed wait::waitpid");
         let time_status = time_start.elapsed().as_secs_f32();
 
-        let resume_pid = match status {
+        let resume: Option<(Pid, Option<Signal>)> = match status {
             // handle syscall
             WaitStatus::PtraceSyscall(pid) => {
                 match partial_syscalls.remove(&pid) {
@@ -231,12 +231,12 @@ pub unsafe fn record_trace_impl(
                     }
                 }
 
-                Some(pid)
+                Some((pid, None))
             }
             // ignore events
             //    these get reported for the parent process when children are created due to the ptrace options,
             //    but we don't care about them
-            WaitStatus::PtraceEvent(pid, _signal, _event) => Some(pid),
+            WaitStatus::PtraceEvent(pid, _signal, _event) => Some((pid, None)),
             // process exited, cleanup and maybe stop tracing
             WaitStatus::Exited(pid, _) | WaitStatus::Signaled(pid, _, _) => {
                 callback(TraceEvent::ProcessExit { pid, time: time_status })?;
@@ -253,17 +253,23 @@ pub unsafe fn record_trace_impl(
                     // initial stop for new child process, create it
                     callback(TraceEvent::ProcessStart { pid, time: time_status })?;
                     active_processes.insert(pid);
+                    Some((pid, None))
+                } else {
+                    // block sigtrap signals
+                    if matches!(signal, Signal::SIGTRAP) {
+                        Some((pid, None))
+                    } else {
+                        Some((pid, Some(signal)))
+                    }
                 }
-
-                Some(pid)
             }
             // cases that shouldn't happen
             WaitStatus::Continued(_) => unreachable!("we didn't set WaitPidFlag::WCONTINUE"),
             WaitStatus::StillAlive => unreachable!("we didn't set WaitPidFlag::WNOHANG"),
         };
 
-        if let Some(resume_pid) = resume_pid {
-            ptrace::syscall(resume_pid, None).expect("failed ptrace::syscall");
+        if let Some((resume_pid, resume_signal)) = resume {
+            ptrace::syscall(resume_pid, resume_signal).expect("failed ptrace::syscall");
         }
     }
 

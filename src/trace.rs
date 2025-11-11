@@ -193,7 +193,7 @@ pub unsafe fn record_trace_impl(
                                     })?;
                                 }
                             }
-                            SyscallEntry::Exec(ref args) => {
+                            SyscallEntry::Exec(args) => {
                                 // check for errors when spawning the child process
                                 // there can be multiple exec attempts due to $PATH, it's fine if any of them succeeds
                                 if !root_exec_any_success && pid == root_pid {
@@ -210,7 +210,11 @@ pub unsafe fn record_trace_impl(
                                         pid,
                                         time: time_start.elapsed().as_secs_f32(),
                                         path: String::from_utf8_lossy(&args.path).into_owned(),
-                                        argv: vec![],
+                                        argv: args
+                                            .argv
+                                            .iter()
+                                            .map(|arg| String::from_utf8_lossy(&arg).into_owned())
+                                            .collect(),
                                     })?;
                                 }
                             }
@@ -334,8 +338,9 @@ fn ptrace_extract_exec_args(pid: Pid, args: ExecArgPointers) -> nix::Result<Exec
     let ExecArgPointers { path, argv: _, envp: _ } = args;
 
     let path = ptrace_read_str(pid, path as *mut _)?;
+    let argv = ptrace_read_str_list(pid, args.argv as *mut _)?;
 
-    Ok(ExecArgs { path, argv: Vec::new() })
+    Ok(ExecArgs { path, argv })
 }
 
 fn ptrace_read_str(pid: Pid, start: *mut libc::c_void) -> nix::Result<Vec<u8>> {
@@ -352,6 +357,21 @@ fn ptrace_read_str(pid: Pid, start: *mut libc::c_void) -> nix::Result<Vec<u8>> {
             }
             result.push(b);
         }
+    }
+
+    Ok(result)
+}
+
+fn ptrace_read_str_list(pid: Pid, start: *mut libc::c_void) -> nix::Result<Vec<Vec<u8>>> {
+    let mut result = Vec::new();
+
+    for index in 0isize.. {
+        let ptr_addr = unsafe { start.offset(index * size_of::<*mut libc::c_void>() as isize) };
+        let ptr_value = ptrace::read(pid, ptr_addr)? as *mut libc::c_void;
+        if ptr_value.is_null() {
+            break;
+        }
+        result.push(ptrace_read_str(pid, ptr_value)?);
     }
 
     Ok(result)

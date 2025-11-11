@@ -114,12 +114,17 @@ pub unsafe fn record_trace_impl(
     // main tracing event loop
     let mut root_exec_any_success = false;
     let mut root_exec_last_error = None;
+    let mut last_sent_time = 0.0;
+    const MIN_DELTA_TIME: f32 = 1.0 / 60.0;
 
     loop {
         let status = wait::waitpid(None, None).expect("failed wait::waitpid");
 
         let time_status = time_start.elapsed().as_secs_f32();
-        callback(TraceEvent::Time { time: time_status })?;
+        if time_status - last_sent_time >= MIN_DELTA_TIME {
+            callback(TraceEvent::Time { time: time_status })?;
+            last_sent_time = time_status;
+        }
 
         let resume_pid = match status {
             // handle syscall

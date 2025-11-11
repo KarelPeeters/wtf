@@ -53,6 +53,8 @@ pub unsafe fn record_trace(
     }
 }
 
+const CHECK_PTRACE_SYSCALL_INFO_NEW: bool = false;
+
 pub unsafe fn record_trace_impl(
     child_path: &CStr,
     child_argv: &[CString],
@@ -116,23 +118,23 @@ pub unsafe fn record_trace_impl(
         let resume_pid = match status {
             // handle syscall
             WaitStatus::PtraceSyscall(pid) => {
-                let info = ptrace_syscall_info(pid).expect("failed ptrace::syscall_info");
-
-                match info.op {
-                    libc::PTRACE_SYSCALL_INFO_ENTRY => {
-                        let info_entry = unsafe { &info.u.entry };
-                        let nr = Sysno::new(info_entry.nr as usize);
+                match partial_syscalls.remove(&pid) {
+                    None => {
+                        // syscall entry
+                        let info = ptrace_syscall_info_entry(CHECK_PTRACE_SYSCALL_INFO_NEW, pid)
+                            .expect("failed to get syscall entry info");
+                        let nr = Sysno::new(info.nr as usize);
 
                         let next_partial_syscall = if let Some(nr) = nr {
                             let res = match nr {
                                 // handle fork-like
                                 Sysno::clone => {
-                                    let flags = info_entry.args[0];
+                                    let flags = info.args[0];
                                     SyscallEntry::Fork(process_kind_from_clone_flags(flags as _))
                                 }
                                 Sysno::clone3 => {
-                                    let clone_args_ptr = info_entry.args[0];
-                                    let clone_args_size = info_entry.args[1] as usize;
+                                    let clone_args_ptr = info.args[0];
+                                    let clone_args_size = info.args[1] as usize;
                                     let flags = if clone_args_size >= 8 {
                                         ptrace::read(pid, clone_args_ptr as *mut libc::c_void)
                                             .expect("failed to read clone_args")
@@ -146,9 +148,9 @@ pub unsafe fn record_trace_impl(
                                 // handle exec-like
                                 Sysno::execve => {
                                     let args_ptr = ExecArgPointers {
-                                        path: info_entry.args[0],
-                                        argv: info_entry.args[1],
-                                        envp: info_entry.args[2],
+                                        path: info.args[0],
+                                        argv: info.args[1],
+                                        envp: info.args[2],
                                     };
                                     let args =
                                         ptrace_extract_exec_args(pid, args_ptr).expect("failed to extract exec args");
@@ -156,9 +158,9 @@ pub unsafe fn record_trace_impl(
                                 }
                                 Sysno::execveat => {
                                     let args_ptr = ExecArgPointers {
-                                        path: info_entry.args[1],
-                                        argv: info_entry.args[2],
-                                        envp: info_entry.args[3],
+                                        path: info.args[1],
+                                        argv: info.args[2],
+                                        envp: info.args[3],
                                     };
                                     let args =
                                         ptrace_extract_exec_args(pid, args_ptr).expect("failed to extract exec args");
@@ -178,17 +180,17 @@ pub unsafe fn record_trace_impl(
 
                         partial_syscalls.insert_first(pid, next_partial_syscall);
                     }
-                    libc::PTRACE_SYSCALL_INFO_EXIT => {
-                        let info_exit = unsafe { &info.u.exit };
+                    Some(partial) => {
+                        let info = ptrace_syscall_info_exit(CHECK_PTRACE_SYSCALL_INFO_NEW, pid)
+                            .expect("failed to get syscall exit info");
 
-                        let partial = partial_syscalls.remove(&pid).unwrap_or(SyscallEntry::Ignore);
                         match partial {
                             SyscallEntry::Ignore => {}
                             SyscallEntry::Fork(fork_kind) => {
-                                if info_exit.sval > 0 {
+                                if info.sval > 0 {
                                     callback(TraceEvent::ProcessChild {
                                         parent: pid,
-                                        child: Pid::from_raw(info_exit.sval as i32),
+                                        child: Pid::from_raw(info.sval as i32),
                                         kind: fork_kind,
                                     })?;
                                 }
@@ -197,14 +199,14 @@ pub unsafe fn record_trace_impl(
                                 // check for errors when spawning the child process
                                 // there can be multiple exec attempts due to $PATH, it's fine if any of them succeeds
                                 if !root_exec_any_success && pid == root_pid {
-                                    if info_exit.sval < 0 {
-                                        root_exec_last_error = Some(Errno::from_raw(-info_exit.sval as i32));
+                                    if info.sval < 0 {
+                                        root_exec_last_error = Some(Errno::from_raw(-info.sval as i32));
                                     } else {
                                         root_exec_any_success = true;
                                     }
                                 }
 
-                                if info_exit.sval == 0 {
+                                if info.sval == 0 {
                                     // TODO populate arv
                                     callback(TraceEvent::ProcessExec {
                                         pid,
@@ -220,7 +222,6 @@ pub unsafe fn record_trace_impl(
                             }
                         }
                     }
-                    _ => {}
                 }
 
                 Some(pid)
@@ -313,6 +314,53 @@ fn process_kind_from_clone_flags(flags: libc::c_long) -> ProcessKind {
     } else {
         ProcessKind::Process
     }
+}
+
+struct PtraceSyscallInfoEntry {
+    nr: u64,
+    args: [u64; 6],
+}
+
+struct PtraceSyscallInfoExit {
+    sval: i64,
+}
+
+fn ptrace_syscall_info_entry(check_using_syscall: bool, pid: Pid) -> nix::Result<PtraceSyscallInfoEntry> {
+    // get info manually
+    let regs = ptrace::getregs(pid)?;
+    let info = PtraceSyscallInfoEntry {
+        nr: regs.orig_rax,
+        args: [regs.rdi, regs.rsi, regs.rdx, regs.r10, regs.r8, regs.r9],
+    };
+
+    // check that info matches the kernel-provided function
+    if check_using_syscall {
+        let info_new = ptrace_syscall_info(pid)?;
+
+        assert_eq!(info_new.op, libc::PTRACE_SYSCALL_INFO_ENTRY);
+        let info_new = unsafe { &info_new.u.entry };
+        assert_eq!(info_new.nr, info.nr);
+        assert_eq!(info_new.args, info.args);
+    }
+
+    Ok(info)
+}
+
+fn ptrace_syscall_info_exit(check_using_syscall: bool, pid: Pid) -> nix::Result<PtraceSyscallInfoExit> {
+    // get info manually
+    let regs = ptrace::getregs(pid)?;
+    let info = PtraceSyscallInfoExit { sval: regs.rax as i64 };
+
+    // check that info matches the kernel-provided function
+    if check_using_syscall {
+        let info_new = ptrace_syscall_info(pid)?;
+
+        assert_eq!(info_new.op, libc::PTRACE_SYSCALL_INFO_EXIT);
+        let info_new = unsafe { &info_new.u.exit };
+        assert_eq!(info_new.sval, info.sval);
+    }
+
+    Ok(info)
 }
 
 /// Fixed version of ptrace::syscall_info.

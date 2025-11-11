@@ -155,7 +155,7 @@ fn process_time_bound(rec: &Recording, cache: &mut TimeCache, pid: Pid) -> Range
             bound_min = bound_min.min(*c_bound.start());
             bound_max = bound_max.max(*c_bound.end());
         }
-        process_for_each_time(info, |t| {
+        process_for_each_time(info, rec.last_time, |t| {
             bound_min = bound_min.min(t);
             bound_max = bound_max.max(t);
         });
@@ -166,7 +166,7 @@ fn process_time_bound(rec: &Recording, cache: &mut TimeCache, pid: Pid) -> Range
     res
 }
 
-fn process_for_each_time(proc: &ProcessInfo, mut f: impl FnMut(f32)) {
+fn process_for_each_time(proc: &ProcessInfo, last_time: f32, mut f: impl FnMut(f32)) {
     let &ProcessInfo {
         pid: _,
         time_start,
@@ -177,6 +177,8 @@ fn process_for_each_time(proc: &ProcessInfo, mut f: impl FnMut(f32)) {
     f(time_start);
     if let Some(time_end) = time_end {
         f(time_end);
+    } else {
+        f(last_time);
     }
     for exec in execs {
         let &ProcessExec { time, path: _, argv: _ } = exec;

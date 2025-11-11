@@ -38,6 +38,9 @@ pub enum TraceEvent {
         path: String,
         argv: Vec<String>,
     },
+    Time {
+        time: f32,
+    },
 }
 
 // TODO better error handling
@@ -114,6 +117,9 @@ pub unsafe fn record_trace_impl(
 
     loop {
         let status = wait::waitpid(None, None).expect("failed wait::waitpid");
+
+        let time_status = time_start.elapsed().as_secs_f32();
+        callback(TraceEvent::Time { time: time_status })?;
 
         let resume_pid = match status {
             // handle syscall
@@ -210,7 +216,7 @@ pub unsafe fn record_trace_impl(
                                     // TODO populate arv
                                     callback(TraceEvent::ProcessExec {
                                         pid,
-                                        time: time_start.elapsed().as_secs_f32(),
+                                        time: time_status,
                                         path: String::from_utf8_lossy(&args.path).into_owned(),
                                         argv: args
                                             .argv
@@ -232,10 +238,7 @@ pub unsafe fn record_trace_impl(
             WaitStatus::PtraceEvent(pid, _signal, _event) => Some(pid),
             // process exited, cleanup and maybe stop tracing
             WaitStatus::Exited(pid, _) | WaitStatus::Signaled(pid, _, _) => {
-                callback(TraceEvent::ProcessExit {
-                    pid,
-                    time: time_start.elapsed().as_secs_f32(),
-                })?;
+                callback(TraceEvent::ProcessExit { pid, time: time_status })?;
 
                 partial_syscalls.remove(&pid);
                 if pid == root_pid {
@@ -247,10 +250,7 @@ pub unsafe fn record_trace_impl(
             WaitStatus::Stopped(pid, signal) => {
                 if matches!(signal, Signal::SIGSTOP | Signal::SIGTRAP) && !active_processes.contains(&pid) {
                     // initial stop for new child process, create it
-                    callback(TraceEvent::ProcessStart {
-                        pid,
-                        time: time_start.elapsed().as_secs_f32(),
-                    })?;
+                    callback(TraceEvent::ProcessStart { pid, time: time_status })?;
                     active_processes.insert(pid);
                 }
 

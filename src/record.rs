@@ -7,6 +7,7 @@ use nix::unistd::Pid;
 pub struct Recording {
     pub root_pid: Option<Pid>,
     pub processes: IndexMap<Pid, ProcessInfo>,
+    pub last_time: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +40,7 @@ impl Recording {
         Self {
             root_pid: None,
             processes: IndexMap::new(),
+            last_time: 0.0,
         }
     }
 
@@ -67,6 +69,9 @@ impl Recording {
             TraceEvent::ProcessExec { pid, time, path, argv } => {
                 let exec = ProcessExec { time, path, argv };
                 self.processes.get_mut(&pid).unwrap().execs.push(exec);
+            }
+            TraceEvent::Time { time } => {
+                self.last_time = time;
             }
         }
     }

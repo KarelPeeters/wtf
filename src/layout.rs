@@ -1,31 +1,27 @@
-use crate::record::{ProcessExec, ProcessInfo, ProcessKind, Recording};
+use crate::record::{ProcessKind, Recording, TimeRange};
 use crate::util::MapExt;
 use indexmap::IndexMap;
 use itertools::{Either, Itertools};
 use nix::unistd::Pid;
 use ordered_float::OrderedFloat;
 use std::cmp::min;
-use std::ops::{Range, RangeInclusive};
+use std::ops::Range;
 
 pub struct PlacedProcess {
     pub pid: Pid,
+    pub time_bound: TimeRange,
 
-    pub depth: usize,
     pub row_offset: usize,
     pub row_height: usize,
 
     pub children: Vec<PlacedProcess>,
-
-    // bounds
-    pub max_depth: usize,
-    pub time_bound: RangeInclusive<f32>,
 }
 
 pub fn place_processes(rec: &Recording, include_threads: bool) -> Option<PlacedProcess> {
     // TODO what about orphans?
     rec.root_pid.and_then(|root_pid| {
         let mut cache = TimeCache::new();
-        place_process(rec, include_threads, &mut cache, root_pid, 0)
+        place_process(rec, include_threads, &mut cache, root_pid)
     })
 }
 
@@ -53,13 +49,7 @@ impl PlacedProcess {
     }
 }
 
-fn place_process(
-    rec: &Recording,
-    include_threads: bool,
-    cache: &mut TimeCache,
-    pid: Pid,
-    depth: usize,
-) -> Option<PlacedProcess> {
+fn place_process(rec: &Recording, include_threads: bool, cache: &mut TimeCache, pid: Pid) -> Option<PlacedProcess> {
     let info = rec.processes.get(&pid)?;
 
     // filter/flatten children
@@ -85,12 +75,14 @@ fn place_process(
     let mut time_to_events: IndexMap<OrderedFloat<f32>, (Vec<Pid>, Vec<Pid>)> = IndexMap::new();
     for c in children {
         let cb = process_time_bound(rec, cache, c);
-        if cb.start() == cb.end() {
+        if Some(cb.start) == cb.end {
             // TODO can we leave these in? they're tricky because they start and stop in the same cycle
             continue;
         }
-        time_to_events.entry(OrderedFloat(*cb.start())).or_default().0.push(c);
-        time_to_events.entry(OrderedFloat(*cb.end())).or_default().1.push(c);
+        time_to_events.entry(OrderedFloat(cb.start)).or_default().0.push(c);
+        if let Some(cb_end) = cb.end {
+            time_to_events.entry(OrderedFloat(cb_end)).or_default().1.push(c);
+        }
     }
     let sorted_events = time_to_events
         .into_iter()
@@ -102,7 +94,6 @@ fn place_process(
     let mut free = FreeList::new();
     let mut children_active: IndexMap<Pid, Range<usize>> = IndexMap::new();
     let mut placed_children = vec![];
-    let mut max_depth = depth;
 
     for (children_start, children_end) in sorted_events {
         // handle child ends (first to allow immediately reusing rows)
@@ -114,9 +105,8 @@ fn place_process(
 
         // handle child starts
         for child in children_start {
-            if let Some(mut child_placed) = place_process(rec, include_threads, cache, child, depth + 1) {
+            if let Some(mut child_placed) = place_process(rec, include_threads, cache, child) {
                 assert_eq!(child_placed.row_offset, 0);
-                max_depth = max_depth.max(child_placed.max_depth);
 
                 let child_height = child_placed.row_height;
                 let child_row = free.allocate(child_height);
@@ -130,60 +120,47 @@ fn place_process(
     // combine everything
     Some(PlacedProcess {
         pid,
-        depth,
+        time_bound: process_time_bound(rec, cache, pid),
         row_offset: 0,
         row_height: 1 + free.len(),
         children: placed_children,
-        max_depth,
-        time_bound: process_time_bound(rec, cache, pid),
     })
 }
 
-type TimeCache = IndexMap<Pid, RangeInclusive<f32>>;
+type TimeCache = IndexMap<Pid, TimeRange>;
 
-fn process_time_bound(rec: &Recording, cache: &mut TimeCache, pid: Pid) -> RangeInclusive<f32> {
+fn process_time_bound(rec: &Recording, cache: &mut TimeCache, pid: Pid) -> TimeRange {
     if let Some(res) = cache.get(&pid) {
         return res.clone();
     }
 
-    let mut bound_min = f32::MAX;
-    let mut bound_max = f32::MIN;
+    let mut start = f32::MAX;
+    let mut end = Some(f32::MIN);
+
+    let mut join_range = |range: TimeRange| {
+        start = start.min(range.start);
+        end = match (end, range.end) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (_, None) | (None, _) => None,
+        };
+    };
 
     if let Some(info) = rec.processes.get(&pid) {
-        for &(_, c) in &info.children {
-            let c_bound = process_time_bound(rec, cache, c);
-            bound_min = bound_min.min(*c_bound.start());
-            bound_max = bound_max.max(*c_bound.end());
+        join_range(info.time);
+        for exec in &info.execs {
+            join_range(TimeRange {
+                start: exec.time,
+                end: Some(exec.time),
+            });
         }
-        process_for_each_time(info, rec.last_time, |t| {
-            bound_min = bound_min.min(t);
-            bound_max = bound_max.max(t);
-        });
+        for &(_, c) in &info.children {
+            join_range(process_time_bound(rec, cache, c));
+        }
     }
 
-    let res = bound_min..=bound_max;
-    cache.insert_first(pid, res.clone());
+    let res = TimeRange { start, end };
+    cache.insert_first(pid, res);
     res
-}
-
-fn process_for_each_time(proc: &ProcessInfo, last_time: f32, mut f: impl FnMut(f32)) {
-    let &ProcessInfo {
-        pid: _,
-        time_start,
-        time_end,
-        ref execs,
-        children: _,
-    } = proc;
-    f(time_start);
-    if let Some(time_end) = time_end {
-        f(time_end);
-    } else {
-        f(last_time);
-    }
-    for exec in execs {
-        let &ProcessExec { time, path: _, argv: _ } = exec;
-        f(time);
-    }
 }
 
 struct FreeList {

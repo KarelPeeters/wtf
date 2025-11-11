@@ -19,6 +19,11 @@ pub struct SpawnFailed(pub Errno);
 
 #[derive(Debug)]
 pub enum TraceEvent {
+    TraceStart {
+        time: Instant,
+    },
+    TraceEnd,
+
     ProcessStart {
         pid: Pid,
         time: f32,
@@ -37,9 +42,6 @@ pub enum TraceEvent {
         time: f32,
         path: String,
         argv: Vec<String>,
-    },
-    Time {
-        time: f32,
     },
 }
 
@@ -98,6 +100,7 @@ pub unsafe fn record_trace_impl(
     // report initial process start
     // TODO is this time info accurate enough?
     let time_start = Instant::now();
+    callback(TraceEvent::TraceStart { time: time_start })?;
     callback(TraceEvent::ProcessStart {
         pid: root_pid,
         time: 0.0,
@@ -114,17 +117,10 @@ pub unsafe fn record_trace_impl(
     // main tracing event loop
     let mut root_exec_any_success = false;
     let mut root_exec_last_error = None;
-    let mut last_sent_time = 0.0;
-    const MIN_DELTA_TIME: f32 = 1.0 / 60.0;
 
     loop {
         let status = wait::waitpid(None, None).expect("failed wait::waitpid");
-
         let time_status = time_start.elapsed().as_secs_f32();
-        if time_status - last_sent_time >= MIN_DELTA_TIME {
-            callback(TraceEvent::Time { time: time_status })?;
-            last_sent_time = time_status;
-        }
 
         let resume_pid = match status {
             // handle syscall

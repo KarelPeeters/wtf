@@ -2,24 +2,32 @@ use crate::trace::TraceEvent;
 use crate::util::MapExt;
 use indexmap::IndexMap;
 use nix::unistd::Pid;
+use std::time::Instant;
 
 #[derive(Debug, Clone)]
 pub struct Recording {
+    pub time_start: Option<Instant>,
+    pub running: bool,
+
     pub root_pid: Option<Pid>,
     pub processes: IndexMap<Pid, ProcessInfo>,
-    pub last_time: f32,
 }
 
 #[derive(Debug, Clone)]
 pub struct ProcessInfo {
     pub pid: Pid,
 
-    pub time_start: f32,
-    pub time_end: Option<f32>,
+    pub time: TimeRange,
 
     pub execs: Vec<ProcessExec>,
     // note: children might be reported here before they actually exist as ProcessInfo entries
     pub children: Vec<(ProcessKind, Pid)>,
+}
+
+#[derive(Debug, Copy, Clone)]
+pub struct TimeRange {
+    pub start: f32,
+    pub end: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -38,19 +46,25 @@ pub enum ProcessKind {
 impl Recording {
     pub fn new() -> Self {
         Self {
+            time_start: None,
+            running: true,
             root_pid: None,
             processes: IndexMap::new(),
-            last_time: 0.0,
         }
     }
 
     pub fn report(&mut self, event: TraceEvent) {
         match event {
+            TraceEvent::TraceStart { time } => {
+                self.time_start = Some(time);
+            }
+            TraceEvent::TraceEnd => {
+                self.running = false;
+            }
             TraceEvent::ProcessStart { pid, time } => {
                 let info = ProcessInfo {
                     pid,
-                    time_start: time,
-                    time_end: None,
+                    time: TimeRange { start: time, end: None },
                     execs: Vec::new(),
                     children: Vec::new(),
                 };
@@ -61,7 +75,7 @@ impl Recording {
                 }
             }
             TraceEvent::ProcessExit { pid, time } => {
-                self.processes.get_mut(&pid).unwrap().time_end = Some(time);
+                self.processes.get_mut(&pid).unwrap().time.end = Some(time);
             }
             TraceEvent::ProcessChild { parent, child, kind } => {
                 self.processes.get_mut(&parent).unwrap().children.push((kind, child));
@@ -69,9 +83,6 @@ impl Recording {
             TraceEvent::ProcessExec { pid, time, path, argv } => {
                 let exec = ProcessExec { time, path, argv };
                 self.processes.get_mut(&pid).unwrap().execs.push(exec);
-            }
-            TraceEvent::Time { time } => {
-                self.last_time = time;
             }
         }
     }

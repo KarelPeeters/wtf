@@ -1,5 +1,5 @@
 use crate::layout::PlacedProcess;
-use crate::record::{ProcessKind, Recording};
+use crate::record::{ProcessKind, Recording, TimeRange};
 use crate::swriteln;
 use crossbeam::channel::Sender;
 use eframe::emath::{Pos2, Rect};
@@ -11,7 +11,6 @@ use egui::{CentralPanel, Context, PointerButton, ScrollArea, Sense, SidePanel};
 use egui_theme_switch::global_theme_switch;
 use itertools::enumerate;
 use nix::unistd::Pid;
-use std::ops::RangeInclusive;
 use std::sync::{Arc, Mutex};
 
 pub struct GuiHandle {
@@ -168,13 +167,14 @@ struct PointerPidInfo {
 }
 
 impl App {
-    fn proc_rect(&self, row: usize, height: usize, time: RangeInclusive<f32>) -> Rect {
+    fn proc_rect(&self, row: usize, height: usize, time_now: f32, time: TimeRange) -> Rect {
         let h = 20.0;
         let w = 200.0 * (self.zoom_linear / 100.0).exp();
 
+        let time_end = time.end.unwrap_or(time_now);
         Rect {
-            min: Pos2::new(w * time.start(), h * (row as f32)),
-            max: Pos2::new(w * time.end(), h * ((row + height) as f32)),
+            min: Pos2::new(w * time.start, h * (row as f32)),
+            max: Pos2::new(w * time_end, h * ((row + height) as f32)),
         }
     }
 
@@ -184,12 +184,25 @@ impl App {
         recording: &Recording,
         root_placed: &PlacedProcess,
     ) -> Option<PointerPidInfo> {
+        // decide current time, used to extend unfinished process ends
+        let time_now = match root_placed.time_bound.end {
+            Some(time_end) => time_end,
+            None => {
+                ui.ctx().request_repaint();
+
+                let Some(time_start) = recording.time_start else {
+                    return None;
+                };
+                time_start.elapsed().as_secs_f32()
+            }
+        };
+
         // first pass: compute bounding box
         let mut bounding_box = Rect::NOTHING;
         root_placed.visit(
             |_, _| {},
             |placed, row, ()| {
-                let proc_rect = self.proc_rect(row, placed.row_height, placed.time_bound.clone());
+                let proc_rect = self.proc_rect(row, placed.row_height, time_now, placed.time_bound);
                 bounding_box |= proc_rect;
             },
         );
@@ -201,18 +214,16 @@ impl App {
         // second pass: actually paint (and collect click events)
         // TODO keep animating this while the process is still running?
         let text_color = ui.visuals().text_color();
-        let time_bound_end = *root_placed.time_bound.end();
         let mut pointer_pid_info = None;
 
         root_placed.visit(
             |placed, row| {
                 // draw background/header and handle interactions
                 let proc = recording.processes.get(&placed.pid).unwrap();
-                let proc_time = proc.time_start..=proc.time_end.unwrap_or(time_bound_end);
 
-                let rect_header = self.proc_rect(row, 1, proc_time.clone()).translate(offset);
+                let rect_header = self.proc_rect(row, 1, time_now, proc.time).translate(offset);
                 let rect_full = self
-                    .proc_rect(row, placed.row_height, placed.time_bound.clone())
+                    .proc_rect(row, placed.row_height, time_now, proc.time)
                     .translate(offset);
 
                 let pointer_in_rect = ui.rect_contains_pointer(rect_full);
@@ -300,9 +311,9 @@ impl App {
                     }
                 }
 
-                swriteln!(text, "{I}time_start: {}", info.time_start);
-                swriteln!(text, "{I}time_end: {:?}", info.time_end);
-                let duration = info.time_end.map(|time_end| time_end - info.time_start);
+                swriteln!(text, "{I}time_start: {}", info.time.start);
+                swriteln!(text, "{I}time_end: {:?}", info.time.end);
+                let duration = info.time.end.map(|time_end| time_end - info.time.start);
                 swriteln!(text, "{I}duration: {:?}", duration);
 
                 swriteln!(text, "{I}children: {}", child_count_processes);

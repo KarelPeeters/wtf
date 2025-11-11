@@ -247,7 +247,7 @@ impl App {
                     });
                 }
 
-                let text = proc.execs.first().map(|exec| exec.path.as_str()).unwrap_or("?");
+                let text = proc.execs.last().map(|exec| exec.path.as_str()).unwrap_or("?");
                 let text = text.rsplit_once("/").map(|(_, s)| s).unwrap_or(text);
                 let colors = get_process_color(&self.color_settings, ui.visuals().dark_mode, text);
 

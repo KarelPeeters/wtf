@@ -145,7 +145,7 @@ def handle_strace_line(processes: Processes, s: str):
             processes.processes[pid].children.append(info)
 
         # process starting a binary
-        elif rest.startswith("execve(") or rest.startswith("execat("):
+        elif rest.startswith("execve(") or rest.startswith("execveat("):
             m = REGEX_EXEC.fullmatch(rest)
             cmd = ProcessCommand(
                 time=time,
@@ -299,7 +299,6 @@ def place_process(processes: Processes, parent: ProcessInfo) -> PlacedProcess:
         # handle process ends (do this first to allow immediate reuse of space)
         for proc in procs_end:
             placed = process_running.pop(proc.pid)
-            placed_children.append(placed)
             free.release(placed.offset, placed.height)
 
         # handle process starts

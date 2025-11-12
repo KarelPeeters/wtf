@@ -110,7 +110,7 @@ impl eframe::App for App {
                 add_value_sliders("Light", &mut self.color_settings.val_light);
 
                 ui.separator();
-                ui.heading("Process info");
+                ui.heading("Selected process info");
                 ui.label(self.selected_pid_info());
             });
         });
@@ -351,39 +351,38 @@ impl App {
             .or(self.selected_pid)
             .or_else(|| self.data.as_ref().and_then(|d| d.recording.root_pid));
         let Some(pid) = pid else {
-            return "No process selected".to_owned();
+            return "".to_owned();
         };
 
         // render info to string
         const I: &str = "    ";
 
         let mut text = String::new();
-        swriteln!(text, "Selected process:");
-        swriteln!(text, "{I}pid: {}", pid);
+        swriteln!(text, "pid: {}", pid);
 
         if let Some(data) = &self.data {
             if let Some(info) = data.recording.processes.get(&pid) {
-                swriteln!(text, "{I}time_start: {}", info.time.start);
-                swriteln!(text, "{I}time_end: {:?}", info.time.end);
+                swriteln!(text, "time_start: {}", info.time.start);
+                swriteln!(text, "time_end: {:?}", info.time.end);
                 let duration = info.time.end.map(|time_end| time_end - info.time.start);
-                swriteln!(text, "{I}duration: {:?}", duration);
+                swriteln!(text, "duration: {:?}", duration);
 
                 let child_counts = data.recording.child_counts(pid);
-                swriteln!(text, "{I}children: {}", child_counts.processes);
-                swriteln!(text, "{I}threads: {}", child_counts.threads);
+                swriteln!(text, "children: {}", child_counts.processes);
+                swriteln!(text, "threads: {}", child_counts.threads);
 
-                swriteln!(text, "{I}execs: {}", info.execs.len());
+                swriteln!(text, "execs: {}", info.execs.len());
 
                 for (i_exec, exec) in enumerate(&info.execs) {
-                    swriteln!(text, "{I}{I}{i_exec}");
+                    swriteln!(text, "{I}{i_exec}");
 
-                    swriteln!(text, "{I}{I}{I}time: {}", exec.time);
-                    swriteln!(text, "{I}{I}{I}cwd: {}", exec.cwd.as_ref().map_or("?", String::as_str));
-                    swriteln!(text, "{I}{I}{I}path: {}", exec.path);
+                    swriteln!(text, "{I}{I}time: {}", exec.time);
+                    swriteln!(text, "{I}{I}cwd: {}", exec.cwd.as_ref().map_or("?", String::as_str));
+                    swriteln!(text, "{I}{I}path: {}", exec.path);
 
-                    swriteln!(text, "{I}{I}{I}argv:");
+                    swriteln!(text, "{I}{I}argv:");
                     for arg in &exec.argv {
-                        swriteln!(text, "{I}{I}{I}{I}{}", arg);
+                        swriteln!(text, "{I}{I}{I}{}", arg);
                     }
                 }
             }

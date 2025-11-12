@@ -33,6 +33,7 @@ pub struct TimeRange {
 #[derive(Debug, Clone)]
 pub struct ProcessExec {
     pub time: f32,
+    pub cwd: Option<String>,
     pub path: String,
     pub argv: Vec<String>,
 }
@@ -86,8 +87,8 @@ impl Recording {
             TraceEvent::ProcessChild { parent, child, kind } => {
                 self.processes.get_mut(&parent).unwrap().children.push((kind, child));
             }
-            TraceEvent::ProcessExec { pid, time, path, argv } => {
-                let exec = ProcessExec { time, path, argv };
+            TraceEvent::ProcessExec { pid, time, path, cwd, argv } => {
+                let exec = ProcessExec { time, path, cwd, argv };
                 self.processes.get_mut(&pid).unwrap().execs.push(exec);
             }
         }

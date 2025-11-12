@@ -378,6 +378,7 @@ impl App {
                     swriteln!(text, "{I}{I}{i_exec}");
 
                     swriteln!(text, "{I}{I}{I}time: {}", exec.time);
+                    swriteln!(text, "{I}{I}{I}cwd: {}", exec.cwd.as_ref().map_or("?", String::as_str));
                     swriteln!(text, "{I}{I}{I}path: {}", exec.path);
 
                     swriteln!(text, "{I}{I}{I}argv:");

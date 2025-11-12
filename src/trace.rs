@@ -40,6 +40,7 @@ pub enum TraceEvent {
     ProcessExec {
         pid: Pid,
         time: f32,
+        cwd: Option<String>,
         path: String,
         argv: Vec<String>,
     },
@@ -214,10 +215,11 @@ pub unsafe fn record_trace_impl(
                                 }
 
                                 if info.sval == 0 {
-                                    // TODO populate arv
+                                    let cwd = get_process_working_dir(pid).ok();
                                     callback(TraceEvent::ProcessExec {
                                         pid,
                                         time: time_status,
+                                        cwd,
                                         path: String::from_utf8_lossy(&args.path).into_owned(),
                                         argv: args
                                             .argv
@@ -290,6 +292,12 @@ pub unsafe fn run_child(child_path: &CStr, child_argv: &[CString]) -> Result<(),
     // actually execute the target program
     nix::unistd::execvp(child_path, child_argv)?;
     Ok(())
+}
+
+fn get_process_working_dir(pid: Pid) -> std::io::Result<String> {
+    let path = format!("/proc/{}/cwd", pid);
+    let cwd = std::fs::read_link(path)?;
+    Ok(cwd.to_string_lossy().into_owned())
 }
 
 #[derive(Debug)]

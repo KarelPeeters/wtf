@@ -52,9 +52,9 @@ pub enum TraceEvent {
 pub unsafe fn record_trace(
     child_path: &CStr,
     child_argv: &[CString],
-    mut callback: impl FnMut(TraceEvent) -> ControlFlow<()>,
+    callback: impl FnMut(TraceEvent) -> ControlFlow<()>,
 ) -> Result<(), SpawnFailed> {
-    let r = unsafe { record_trace_impl(child_path, child_argv, |event| callback(event)) };
+    let r = unsafe { record_trace_impl(child_path, child_argv, callback) };
     match r {
         ControlFlow::Continue(r) => r,
         ControlFlow::Break(()) => Ok(()),
@@ -136,7 +136,7 @@ pub unsafe fn record_trace_impl(
                         let nr = Sysno::new(info.nr as usize);
 
                         let next_partial_syscall = if let Some(nr) = nr {
-                            let res = match nr {
+                            match nr {
                                 // handle fork-like
                                 Sysno::clone => {
                                     let flags = info.args[0];
@@ -180,9 +180,7 @@ pub unsafe fn record_trace_impl(
                                 Sysno::exit | Sysno::exit_group => SyscallEntry::Ignore,
                                 // ignore other syscalls, we're only interested in fork/exec
                                 _ => SyscallEntry::Ignore,
-                            };
-
-                            res
+                            }
                         } else {
                             // ignore unknown syscalls
                             SyscallEntry::Ignore
@@ -226,7 +224,7 @@ pub unsafe fn record_trace_impl(
                                         argv: args
                                             .argv
                                             .iter()
-                                            .map(|arg| String::from_utf8_lossy(&arg).into_owned())
+                                            .map(|arg| String::from_utf8_lossy(arg).into_owned())
                                             .collect(),
                                     })?;
                                 }

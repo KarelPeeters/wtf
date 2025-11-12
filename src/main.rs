@@ -32,7 +32,7 @@ struct Args {
 fn main() -> ExitCode {
     // parse args
     let args = Args::parse();
-    assert!(args.command.len() >= 1);
+    assert!(!args.command.is_empty());
 
     // create shared state and channels
     let stopped = Arc::new(AtomicBool::new(false));

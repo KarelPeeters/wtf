@@ -1,5 +1,4 @@
 use crate::trace::TraceEvent;
-use crate::util::MapExt;
 use indexmap::IndexMap;
 use nix::unistd::Pid;
 use std::time::Instant;

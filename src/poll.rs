@@ -102,7 +102,7 @@ fn poll_proc_all<B>(
     let new_info = get_process_exec_info(pid);
     if prev_active
         .get(&pid)
-        .map_or(true, |info| &info.path != &new_info.path || info.argv != new_info.argv)
+        .is_none_or(|info| info.path != new_info.path || info.argv != new_info.argv)
     {
         callback(TraceEvent::ProcessExec {
             pid,
@@ -152,7 +152,7 @@ fn poll_proc_all<B>(
                         }
 
                         // recurse into child process
-                        poll_proc_all(time, child_pid, &prev_active, curr_active, callback)?;
+                        poll_proc_all(time, child_pid, prev_active, curr_active, callback)?;
                     }
                 }
             }

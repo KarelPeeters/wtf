@@ -129,8 +129,8 @@ fn place_process(rec: &Recording, include_threads: bool, cache: &mut TimeCache, 
 type TimeCache = IndexMap<Pid, TimeRange>;
 
 fn process_time_bound(rec: &Recording, cache: &mut TimeCache, pid: Pid) -> TimeRange {
-    if let Some(res) = cache.get(&pid) {
-        return res.clone();
+    if let Some(&res) = cache.get(&pid) {
+        return res;
     }
 
     let mut start = f32::MAX;

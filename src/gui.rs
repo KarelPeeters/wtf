@@ -2,9 +2,9 @@ use crate::layout::PlacedProcess;
 use crate::record::{Recording, TimeRange};
 use crate::swriteln;
 use crossbeam::channel::Sender;
-use eframe::Frame;
 use eframe::emath::{Pos2, Rect};
 use eframe::epaint::{Color32, CornerRadiusF32, FontId, Stroke, StrokeKind};
+use eframe::Frame;
 use egui::ecolor::Hsva;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
 use egui::style::ScrollAnimation;
@@ -230,9 +230,7 @@ impl App {
             None => {
                 ui.ctx().request_repaint();
 
-                let Some(time_start) = recording.time_start else {
-                    return None;
-                };
+                let time_start = recording.time_start?;
                 time_start.elapsed().as_secs_f32()
             }
         };
@@ -360,30 +358,30 @@ impl App {
         let mut text = String::new();
         swriteln!(text, "pid: {}", pid);
 
-        if let Some(data) = &self.data {
-            if let Some(info) = data.recording.processes.get(&pid) {
-                swriteln!(text, "time_start: {}", info.time.start);
-                swriteln!(text, "time_end: {:?}", info.time.end);
-                let duration = info.time.end.map(|time_end| time_end - info.time.start);
-                swriteln!(text, "duration: {:?}", duration);
+        if let Some(data) = &self.data
+            && let Some(info) = data.recording.processes.get(&pid)
+        {
+            swriteln!(text, "time_start: {}", info.time.start);
+            swriteln!(text, "time_end: {:?}", info.time.end);
+            let duration = info.time.end.map(|time_end| time_end - info.time.start);
+            swriteln!(text, "duration: {:?}", duration);
 
-                let child_counts = data.recording.child_counts(pid);
-                swriteln!(text, "children: {}", child_counts.processes);
-                swriteln!(text, "threads: {}", child_counts.threads);
+            let child_counts = data.recording.child_counts(pid);
+            swriteln!(text, "children: {}", child_counts.processes);
+            swriteln!(text, "threads: {}", child_counts.threads);
 
-                swriteln!(text, "execs: {}", info.execs.len());
+            swriteln!(text, "execs: {}", info.execs.len());
 
-                for (i_exec, exec) in enumerate(&info.execs) {
-                    swriteln!(text, "{I}{i_exec}");
+            for (i_exec, exec) in enumerate(&info.execs) {
+                swriteln!(text, "{I}{i_exec}");
 
-                    swriteln!(text, "{I}{I}time: {}", exec.time);
-                    swriteln!(text, "{I}{I}cwd: {}", exec.cwd.as_ref().map_or("?", String::as_str));
-                    swriteln!(text, "{I}{I}path: {}", exec.path);
+                swriteln!(text, "{I}{I}time: {}", exec.time);
+                swriteln!(text, "{I}{I}cwd: {}", exec.cwd.as_ref().map_or("?", String::as_str));
+                swriteln!(text, "{I}{I}path: {}", exec.path);
 
-                    swriteln!(text, "{I}{I}argv:");
-                    for arg in &exec.argv {
-                        swriteln!(text, "{I}{I}{I}{}", arg);
-                    }
+                swriteln!(text, "{I}{I}argv:");
+                for arg in &exec.argv {
+                    swriteln!(text, "{I}{I}{I}{}", arg);
                 }
             }
         };

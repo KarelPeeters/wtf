@@ -140,6 +140,8 @@ fn poll_proc_all<B>(
                     // report child thread
                     if let Entry::Vacant(e) = ever_active.entry(task_pid) {
                         e.insert(None);
+                        curr_active.insert(task_pid);
+
                         callback(TraceEvent::ProcessStart { pid: task_pid, time })?;
                         callback(TraceEvent::ProcessChild {
                             parent: pid,

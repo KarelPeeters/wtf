@@ -273,7 +273,7 @@ impl App {
                 let rect_full = rect_params
                     .proc_rect(placed.time_bound, row, placed.row_height)
                     .translate(offset);
-                if !ui.is_rect_visible(rect_full) {
+                if !ui.is_rect_visible(rect_full) || rect_full.width() < 0.5 {
                     return ControlFlow::Break(());
                 }
                 let rect_header = rect_params.proc_rect(proc.time, row, 1).translate(offset);

@@ -1,10 +1,11 @@
 use crate::record::ProcessKind;
 use crate::trace::TraceEvent;
 use nix::unistd::Pid;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::ops::ControlFlow;
+use std::os::unix::ffi::OsStringExt;
 use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
 
@@ -17,6 +18,8 @@ macro_rules! try_control {
     };
 }
 
+type ProcMap = HashMap<Pid, ProcessExecInfo>;
+
 pub fn poll_proc<B>(
     child_path: &OsStr,
     child_argv: &[OsString],
@@ -27,15 +30,15 @@ pub fn poll_proc<B>(
     let mut root_handle = Command::new(child_path).args(child_argv).spawn()?;
     let root_pid = Pid::from_raw(root_handle.id() as i32);
 
-    let mut prev_active: HashSet<Pid> = HashSet::new();
-    let mut curr_active: HashSet<Pid> = HashSet::new();
+    let mut prev_active: ProcMap = HashMap::new();
+    let mut curr_active: ProcMap = HashMap::new();
 
     try_control!(callback(TraceEvent::TraceStart { time: time_start }));
     try_control!(callback(TraceEvent::ProcessStart {
         pid: root_pid,
         time: 0.0
     }));
-    prev_active.insert(root_pid);
+    prev_active.insert(root_pid, get_process_exec_info(root_pid));
 
     loop {
         let time_now = Instant::now();
@@ -57,9 +60,9 @@ pub fn poll_proc<B>(
             &mut callback
         ));
 
-        // collect dead processes
-        for &pid in &prev_active {
-            if !curr_active.contains(&pid) {
+        // report dead processes
+        for &pid in prev_active.keys() {
+            if !curr_active.contains_key(&pid) {
                 try_control!(callback(TraceEvent::ProcessExit { pid, time: time_now_f }));
             }
         }
@@ -77,15 +80,27 @@ pub fn poll_proc<B>(
 fn poll_proc_all<B>(
     time: f32,
     pid: Pid,
-    prev_active: &HashSet<Pid>,
-    curr_active: &mut HashSet<Pid>,
+    prev_active: &ProcMap,
+    curr_active: &mut ProcMap,
     callback: &mut impl FnMut(TraceEvent) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
-    // mark process as active
-    if !prev_active.contains(&pid) {
+    // maybe report process start
+    if !prev_active.contains_key(&pid) {
         callback(TraceEvent::ProcessStart { pid, time })?;
     }
-    curr_active.insert(pid);
+
+    // maybe report process exec change
+    let new_info = get_process_exec_info(pid);
+    if prev_active.get(&pid).map_or(true, |info| info != &new_info) {
+        callback(TraceEvent::ProcessExec {
+            pid,
+            time,
+            cwd: new_info.cwd.clone(),
+            path: new_info.path.clone(),
+            argv: new_info.argv.clone(),
+        })?;
+    }
+    curr_active.insert(pid, new_info);
 
     // visit children
     if let Ok(children) = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")) {
@@ -96,7 +111,7 @@ fn poll_proc_all<B>(
             let child_pid = Pid::from_raw(child.parse::<i32>().unwrap());
 
             // report child process
-            if !prev_active.contains(&child_pid) {
+            if !prev_active.contains_key(&child_pid) {
                 callback(TraceEvent::ProcessChild {
                     parent: pid,
                     child: child_pid,
@@ -116,7 +131,7 @@ fn poll_proc_all<B>(
                 let task_pid = Pid::from_raw(dir.file_name().to_str().unwrap().parse::<i32>().unwrap());
                 if task_pid != pid {
                     // report child thread
-                    if !prev_active.contains(&task_pid) {
+                    if !prev_active.contains_key(&task_pid) {
                         callback(TraceEvent::ProcessChild {
                             parent: pid,
                             child: task_pid,
@@ -132,4 +147,35 @@ fn poll_proc_all<B>(
     }
 
     ControlFlow::Continue(())
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ProcessExecInfo {
+    cwd: Option<String>,
+    path: String,
+    argv: Vec<String>,
+}
+
+fn get_process_exec_info(pid: Pid) -> ProcessExecInfo {
+    let cwd = if let Ok(cwd) = std::fs::read_link(format!("/proc/{}/cwd", pid)) {
+        Some(cwd.into_os_string().to_string_lossy().into_owned())
+    } else {
+        None
+    };
+
+    let path = if let Ok(exe_path) = std::fs::read_link(format!("/proc/{}/exe", pid)) {
+        exe_path.to_string_lossy().into_owned()
+    } else {
+        String::new()
+    };
+
+    let argv = if let Ok(argv) = std::fs::read(format!("/proc/{}/cmdline", pid)) {
+        argv.split(|&b| b == 0)
+            .map(|s| OsString::from_vec(s.to_owned()).to_string_lossy().into_owned())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    ProcessExecInfo { cwd, path, argv }
 }

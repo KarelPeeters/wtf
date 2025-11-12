@@ -62,6 +62,7 @@ impl Recording {
 
     pub fn report(&mut self, event: TraceEvent) {
         match event {
+            TraceEvent::None => {}
             TraceEvent::TraceStart { time } => {
                 self.time_start = Some(time);
             }

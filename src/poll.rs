@@ -51,6 +51,8 @@ pub fn poll_proc<B>(
         let time_now = Instant::now();
         let time_now_f = (time_now - time_start).as_secs_f32();
 
+        try_control!(callback(TraceEvent::None));
+
         // check if the child is done
         if let Some(status) = root_handle.try_wait()? {
             for &pid in &prev_active {

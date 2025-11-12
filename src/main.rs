@@ -47,9 +47,13 @@ fn main() -> ExitCode {
                 return ControlFlow::Break(());
             }
 
-            match event_tx.send(event) {
-                Ok(()) => ControlFlow::Continue(()),
-                Err(SendError(_)) => ControlFlow::Break(()),
+            if let TraceEvent::None = event {
+                ControlFlow::Continue(())
+            } else {
+                match event_tx.send(event) {
+                    Ok(()) => ControlFlow::Continue(()),
+                    Err(SendError(_)) => ControlFlow::Break(()),
+                }
             }
         };
 

@@ -19,6 +19,8 @@ pub struct SpawnFailed(pub Errno);
 
 #[derive(Debug)]
 pub enum TraceEvent {
+    None,
+
     TraceStart {
         time: Instant,
     },
@@ -124,6 +126,8 @@ pub unsafe fn record_trace_impl(
     loop {
         let status = wait::waitpid(None, None).expect("failed wait::waitpid");
         let time_status = time_start.elapsed().as_secs_f32();
+
+        callback(TraceEvent::None)?;
 
         let resume: Option<(Pid, Option<Signal>)> = match status {
             // handle syscall

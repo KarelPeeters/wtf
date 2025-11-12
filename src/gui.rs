@@ -172,12 +172,12 @@ impl eframe::App for App {
 
                         // manual zoom
                         let scroll_delta = if mod_ctrl {
-                            raw_scroll_delta.yx()
-                        } else {
                             raw_scroll_delta
+                        } else {
+                            raw_scroll_delta.yx()
                         };
                         let zoom_linear_before = self.zoom_linear.x;
-                        self.zoom_linear += scroll_delta.yx();
+                        self.zoom_linear += scroll_delta;
 
                         // pan to keep cursor centered
                         // (using some empirical formulas, reasoning about zoom/pan is hard)
@@ -195,7 +195,7 @@ impl eframe::App for App {
                         }
 
                         // enable/disable autozoom
-                        if scroll_delta != Vec2::ZERO {
+                        if scroll_delta.x != 0.0 {
                             self.zoom_auto_hor = false;
                         }
                         if key_a {
@@ -400,7 +400,7 @@ struct ProcRectParams {
 
 const ZOOM_MULTIPLIER_HOR: f32 = 200.0;
 const ZOOM_MULTIPLIER_VER: f32 = 20.0;
-const ZOOM_MULTIPLIER_EXP: f32 = 50.0;
+const ZOOM_MULTIPLIER_EXP: f32 = 100.0;
 
 impl ProcRectParams {
     pub fn new(time_now: f32, zoom_linear: Vec2) -> Self {

@@ -7,6 +7,7 @@ use ordered_float::OrderedFloat;
 use std::cmp::min;
 use std::ops::{ControlFlow, Range};
 
+#[derive(Debug)]
 pub struct PlacedProcess {
     pub pid: Pid,
     pub time_bound: TimeRange,

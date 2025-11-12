@@ -22,7 +22,9 @@ pub enum TraceEvent {
     TraceStart {
         time: Instant,
     },
-    TraceEnd,
+    TraceEnd {
+        time: f32,
+    },
 
     ProcessStart {
         pid: Pid,

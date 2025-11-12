@@ -2,9 +2,9 @@ use crate::layout::PlacedProcess;
 use crate::record::{Recording, TimeRange};
 use crate::swriteln;
 use crossbeam::channel::Sender;
+use eframe::Frame;
 use eframe::emath::{Pos2, Rect};
 use eframe::epaint::{Color32, CornerRadiusF32, FontId, Stroke, StrokeKind};
-use eframe::Frame;
 use egui::ecolor::Hsva;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
 use egui::style::ScrollAnimation;
@@ -73,7 +73,7 @@ impl App {
             color_settings: ColorSettings::new(),
             zoom_linear: Vec2::ZERO,
             zoom_auto_hor: true,
-            show_threads: false,
+            show_threads: true,
             selected_pid: None,
             hovered_pid: None,
         }
@@ -225,7 +225,7 @@ impl App {
         root_placed: &PlacedProcess,
     ) -> Option<TimeLineInfo> {
         // decide current time, used to extend unfinished process ends
-        let time_now = match root_placed.time_bound.end {
+        let total_time_end = match root_placed.time_bound.end.or(recording.time_end) {
             Some(time_end) => time_end,
             None => {
                 ui.ctx().request_repaint();
@@ -238,7 +238,7 @@ impl App {
         };
 
         // first pass: compute bounding box
-        let rect_params = ProcRectParams::new(time_now, self.zoom_linear);
+        let rect_params = ProcRectParams::new(total_time_end, self.zoom_linear);
         let mut bounding_box = Rect::NOTHING;
         root_placed.visit(
             |_, _| ControlFlow::Continue(()),
@@ -393,7 +393,7 @@ impl App {
 }
 
 struct ProcRectParams {
-    time_now: f32,
+    total_time_end: f32,
     zoom_factor: Vec2,
 }
 
@@ -402,16 +402,19 @@ const ZOOM_MULTIPLIER_VER: f32 = 20.0;
 const ZOOM_MULTIPLIER_EXP: f32 = 100.0;
 
 impl ProcRectParams {
-    pub fn new(time_now: f32, zoom_linear: Vec2) -> Self {
+    pub fn new(total_time_end: f32, zoom_linear: Vec2) -> Self {
         let zoom_factor = Vec2::new(
             zoom_linear_to_factor(zoom_linear.x),
             zoom_linear_to_factor(zoom_linear.y),
         );
-        ProcRectParams { time_now, zoom_factor }
+        ProcRectParams {
+            total_time_end,
+            zoom_factor,
+        }
     }
 
     pub fn proc_rect(&self, time: TimeRange, row: usize, height: usize) -> Rect {
-        let time_end = time.end.unwrap_or(self.time_now);
+        let time_end = time.end.unwrap_or(self.total_time_end);
         let w = ZOOM_MULTIPLIER_HOR * self.zoom_factor.x;
         let h = ZOOM_MULTIPLIER_VER * self.zoom_factor.y;
 

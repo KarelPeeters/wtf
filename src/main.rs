@@ -1,37 +1,81 @@
 #![cfg(unix)]
 
 use clap::Parser;
-use crossbeam::channel::{Receiver, RecvError, SendError, Sender, TryRecvError};
-use std::ffi::CString;
+use crossbeam::channel::{Receiver, RecvError, SendError, TryRecvError};
+use itertools::Itertools;
+use std::ffi::{CString, OsString};
 use std::ops::ControlFlow;
+use std::os::unix::ffi::OsStrExt;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use wtf::gui::{main_gui, DataToGui, GuiHandle};
 use wtf::layout::place_processes;
+use wtf::poll::poll_proc;
 use wtf::record::Recording;
-use wtf::trace::{record_trace, SpawnFailed, TraceEvent};
+use wtf::trace::{record_trace, TraceEvent};
 
 #[derive(Debug, Parser)]
 struct Args {
+    #[arg(long)]
+    /// Polling frequency in Hz. If not passed, ptrace-based tracing is used.
+    poll: Option<f32>,
+
     #[arg(trailing_var_arg = true, required = true, num_args = 1..)]
-    command: Vec<CString>,
+    command: Vec<OsString>,
 }
 
 fn main() -> ExitCode {
+    // parse args
     let args = Args::parse();
-    assert!(args.command.len() > 0);
 
+    assert!(args.command.len() >= 1);
+    let mut command_args = args.command;
+    let command = command_args.remove(0);
+
+    // create shared state and channels
     let stopped = Arc::new(AtomicBool::new(false));
     let (event_tx, event_rx) = crossbeam::channel::unbounded::<TraceEvent>();
     let (gui_handle_tx, gui_handle_rx) = crossbeam::channel::bounded::<GuiHandle>(1);
 
     // spawn tracing thread
-    // TODO does fork/exec work fine with the extra spawned thread?  if not, split this up into start/run
-    // TODO result handling would also be nicer with split, then we get the result in the first half already
     let handle_tracer = {
         let stopped = stopped.clone();
-        std::thread::spawn(move || unsafe { thread_tracer(&args, stopped, event_tx) })
+        let callback = move |event| {
+            if stopped.load(Ordering::Relaxed) {
+                return ControlFlow::Break(());
+            }
+
+            match event_tx.send(event) {
+                Ok(()) => ControlFlow::Continue(()),
+                Err(SendError(_)) => ControlFlow::Break(()),
+            }
+        };
+
+        match args.poll {
+            None => {
+                // TODO does fork/exec work fine with the extra spawned thread?  if not, split this up into start/run
+                let command = CString::new(command.as_bytes()).expect("Failed to convert command to CString");
+                let command_args = command_args
+                    .iter()
+                    .map(|s| CString::new(s.as_bytes()).expect("Failed to convert command to CString"))
+                    .collect_vec();
+
+                std::thread::spawn(move || {
+                    let trace_result = unsafe { record_trace(&command, &command_args, callback) };
+                    if let Err(e) = &trace_result {
+                        eprintln!("Failed to spawn child process: {}", e.0);
+                    }
+                })
+            }
+            Some(poll_freq) => std::thread::spawn(move || {
+                let poll_result = poll_proc(&command, &command_args, Duration::from_secs_f32(poll_freq), callback);
+                if let Err(e) = &poll_result {
+                    eprintln!("Failed to spawn child process: {}", e);
+                }
+            }),
+        }
     };
 
     // spawn collector thread
@@ -44,40 +88,10 @@ fn main() -> ExitCode {
     main_gui(gui_handle_tx).expect("GUI failed");
     stopped.store(true, Ordering::Relaxed);
 
-    let record_result = handle_tracer.join().expect("Failed to join tracer thread");
+    let _ = handle_tracer.join();
     let _ = handle_collector.join();
 
-    match record_result {
-        Ok(()) => {}
-        Err(e) => {
-            eprintln!("Failed to spawn child process: {}", e.0);
-            return ExitCode::FAILURE;
-        }
-    }
-
     ExitCode::SUCCESS
-}
-
-unsafe fn thread_tracer(
-    args: &Args,
-    stopped: Arc<AtomicBool>,
-    event_tx: Sender<TraceEvent>,
-) -> Result<(), SpawnFailed> {
-    let record_result = unsafe {
-        record_trace(&args.command[0], &args.command[0..], |event| {
-            if stopped.load(Ordering::Relaxed) {
-                return ControlFlow::Break(());
-            }
-
-            match event_tx.send(event) {
-                Ok(()) => ControlFlow::Continue(()),
-                Err(SendError(_)) => ControlFlow::Break(()),
-            }
-        })
-    };
-    drop(event_tx);
-
-    record_result
 }
 
 fn thread_collector(stopped: Arc<AtomicBool>, event_rx: Receiver<TraceEvent>, gui_handle_rx: Receiver<GuiHandle>) {

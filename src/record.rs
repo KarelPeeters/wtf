@@ -7,7 +7,7 @@ use std::time::Instant;
 #[derive(Debug, Clone)]
 pub struct Recording {
     pub time_start: Option<Instant>,
-    pub running: bool,
+    pub time_end: Option<f32>,
 
     pub root_pid: Option<Pid>,
     pub processes: IndexMap<Pid, ProcessInfo>,
@@ -54,7 +54,7 @@ impl Recording {
     pub fn new() -> Self {
         Self {
             time_start: None,
-            running: true,
+            time_end: None,
             root_pid: None,
             processes: IndexMap::new(),
         }
@@ -65,8 +65,8 @@ impl Recording {
             TraceEvent::TraceStart { time } => {
                 self.time_start = Some(time);
             }
-            TraceEvent::TraceEnd => {
-                self.running = false;
+            TraceEvent::TraceEnd { time } => {
+                self.time_end = Some(time);
             }
             TraceEvent::ProcessStart { pid, time } => {
                 let info = ProcessInfo {
@@ -87,7 +87,13 @@ impl Recording {
             TraceEvent::ProcessChild { parent, child, kind } => {
                 self.processes.get_mut(&parent).unwrap().children.push((kind, child));
             }
-            TraceEvent::ProcessExec { pid, time, path, cwd, argv } => {
+            TraceEvent::ProcessExec {
+                pid,
+                time,
+                path,
+                cwd,
+                argv,
+            } => {
                 let exec = ProcessExec { time, path, cwd, argv };
                 self.processes.get_mut(&pid).unwrap().execs.push(exec);
             }

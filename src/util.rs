@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use indexmap::IndexMap;
+use std::collections::HashMap;
 
 pub trait MapExt<K, V> {
     fn insert_first(&mut self, key: K, value: V);

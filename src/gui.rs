@@ -2,9 +2,9 @@ use crate::layout::PlacedProcess;
 use crate::record::{Recording, TimeRange};
 use crate::swriteln;
 use crossbeam::channel::Sender;
-use eframe::Frame;
 use eframe::emath::{Pos2, Rect};
 use eframe::epaint::{Color32, CornerRadiusF32, FontId, Stroke, StrokeKind};
+use eframe::Frame;
 use egui::ecolor::Hsva;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
 use egui::style::ScrollAnimation;
@@ -153,7 +153,7 @@ impl eframe::App for App {
                         if self.zoom_auto_hor {
                             let factor = viewport.width() / timeline_info.bounding_box.width();
                             if factor.is_finite() && (1.0 - factor).abs() > 0.0001 {
-                                self.zoom_linear.x += zoom_factor_to_linear(factor);
+                                self.zoom_linear.x += zoom_factor_to_linear(factor, true);
                             }
                         }
                     }
@@ -182,8 +182,8 @@ impl eframe::App for App {
                         // pan to keep cursor centered
                         // (using some empirical formulas, reasoning about zoom/pan is hard)
                         if let Some(pointer_pos) = pointer_pos {
-                            let zoom_factor_before = zoom_linear_to_factor(zoom_linear_before);
-                            let zoom_factor_after = zoom_linear_to_factor(self.zoom_linear.x);
+                            let zoom_factor_before = zoom_linear_to_factor(zoom_linear_before, true);
+                            let zoom_factor_after = zoom_linear_to_factor(self.zoom_linear.x, true);
 
                             let p_delta = (pointer_pos - ui.min_rect().min).x;
                             let p_delta_before = p_delta / zoom_factor_before;
@@ -399,13 +399,14 @@ struct ProcRectParams {
 
 const ZOOM_MULTIPLIER_HOR: f32 = 200.0;
 const ZOOM_MULTIPLIER_VER: f32 = 20.0;
-const ZOOM_MULTIPLIER_EXP: f32 = 100.0;
+const ZOOM_MULTIPLIER_HOR_EXP: f32 = 100.0;
+const ZOOM_MULTIPLIER_VER_EXP: f32 = 200.0;
 
 impl ProcRectParams {
     pub fn new(total_time_end: f32, zoom_linear: Vec2) -> Self {
         let zoom_factor = Vec2::new(
-            zoom_linear_to_factor(zoom_linear.x),
-            zoom_linear_to_factor(zoom_linear.y),
+            zoom_linear_to_factor(zoom_linear.x, true),
+            zoom_linear_to_factor(zoom_linear.y, false),
         );
         ProcRectParams {
             total_time_end,
@@ -425,12 +426,20 @@ impl ProcRectParams {
     }
 }
 
-fn zoom_linear_to_factor(zoom_linear: f32) -> f32 {
-    (zoom_linear / ZOOM_MULTIPLIER_EXP).exp()
+fn zoom_linear_to_factor(zoom_linear: f32, hor: bool) -> f32 {
+    (zoom_linear / zoom_multiplier_exp(hor)).exp()
 }
 
-fn zoom_factor_to_linear(zoom_factor: f32) -> f32 {
-    zoom_factor.ln() * ZOOM_MULTIPLIER_EXP
+fn zoom_factor_to_linear(zoom_factor: f32, hor: bool) -> f32 {
+    zoom_factor.ln() * zoom_multiplier_exp(hor)
+}
+
+fn zoom_multiplier_exp(hor: bool) -> f32 {
+    if hor {
+        ZOOM_MULTIPLIER_HOR_EXP
+    } else {
+        ZOOM_MULTIPLIER_VER_EXP
+    }
 }
 
 struct ProcessColors {

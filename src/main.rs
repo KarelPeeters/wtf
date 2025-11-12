@@ -19,8 +19,11 @@ use wtf::trace::{record_trace, TraceEvent};
 #[derive(Debug, Parser)]
 struct Args {
     #[arg(long)]
-    /// Polling frequency in Hz. If not passed, ptrace-based tracing is used.
-    poll: Option<f32>,
+    /// Use ptrace instead of polling for tracing.
+    ptrace: bool,
+    #[arg(long, default_value_t = 60.0)]
+    /// The polling frequency in Hz. Only used when polling, the default if `--poll` is not specified.
+    poll_freq: f32,
 
     #[arg(trailing_var_arg = true, required = true, num_args = 1..)]
     command: Vec<OsString>,
@@ -29,10 +32,7 @@ struct Args {
 fn main() -> ExitCode {
     // parse args
     let args = Args::parse();
-
     assert!(args.command.len() >= 1);
-    let mut command_args = args.command;
-    let command = command_args.remove(0);
 
     // create shared state and channels
     let stopped = Arc::new(AtomicBool::new(false));
@@ -53,28 +53,32 @@ fn main() -> ExitCode {
             }
         };
 
-        match args.poll {
-            None => {
-                // TODO does fork/exec work fine with the extra spawned thread?  if not, split this up into start/run
-                let command = CString::new(command.as_bytes()).expect("Failed to convert command to CString");
-                let command_args = command_args
-                    .iter()
-                    .map(|s| CString::new(s.as_bytes()).expect("Failed to convert command to CString"))
-                    .collect_vec();
+        if args.ptrace {
+            // TODO does fork/exec work fine with the extra spawned thread?  if not, split this up into start/run
+            let command = args
+                .command
+                .iter()
+                .map(|s| CString::new(s.as_bytes()).expect("Failed to convert command to CString"))
+                .collect_vec();
 
-                std::thread::spawn(move || {
-                    let trace_result = unsafe { record_trace(&command, &command_args, callback) };
-                    if let Err(e) = &trace_result {
-                        eprintln!("Failed to spawn child process: {}", e.0);
-                    }
-                })
-            }
-            Some(poll_freq) => std::thread::spawn(move || {
-                let poll_result = poll_proc(&command, &command_args, Duration::from_secs_f32(poll_freq), callback);
+            std::thread::spawn(move || {
+                let trace_result = unsafe { record_trace(&command[0], &command, callback) };
+                if let Err(e) = &trace_result {
+                    eprintln!("Failed to spawn child process: {}", e.0);
+                }
+            })
+        } else {
+            std::thread::spawn(move || {
+                let poll_result = poll_proc(
+                    &args.command[0],
+                    &args.command,
+                    Duration::from_secs_f32(1.0 / args.poll_freq),
+                    callback,
+                );
                 if let Err(e) = &poll_result {
                     eprintln!("Failed to spawn child process: {}", e);
                 }
-            }),
+            })
         }
     };
 

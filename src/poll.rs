@@ -6,6 +6,7 @@ use std::ffi::{OsStr, OsString};
 use std::io;
 use std::ops::ControlFlow;
 use std::os::unix::ffi::OsStringExt;
+use std::os::unix::process::CommandExt;
 use std::process::{Command, ExitStatus};
 use std::time::{Duration, Instant};
 
@@ -26,8 +27,16 @@ pub fn poll_proc<B>(
     step: Duration,
     mut callback: impl FnMut(TraceEvent) -> ControlFlow<B>,
 ) -> io::Result<ControlFlow<B, ExitStatus>> {
+    // build root command
+    let mut cmd = Command::new(child_path);
+    if let Some((child_argv_0, child_argv_rest)) = child_argv.split_first() {
+        cmd.arg0(child_argv_0);
+        cmd.args(child_argv_rest);
+    };
+
+    // start root process
     let time_start = Instant::now();
-    let mut root_handle = Command::new(child_path).args(child_argv).spawn()?;
+    let mut root_handle = cmd.spawn()?;
     let root_pid = Pid::from_raw(root_handle.id() as i32);
 
     let mut prev_active: ProcMap = HashMap::new();

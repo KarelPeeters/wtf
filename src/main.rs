@@ -7,14 +7,14 @@ use std::ffi::{CString, OsString};
 use std::ops::ControlFlow;
 use std::os::unix::ffi::OsStrExt;
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use wtf::gui::{main_gui, DataToGui, GuiHandle};
+use wtf::gui::{DataToGui, GuiHandle, main_gui};
 use wtf::layout::place_processes;
 use wtf::poll::poll_proc;
 use wtf::record::Recording;
-use wtf::trace::{record_trace, TraceEvent};
+use wtf::trace::{TraceEvent, record_trace};
 
 #[derive(Debug, Parser)]
 struct Args {

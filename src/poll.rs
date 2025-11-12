@@ -43,11 +43,6 @@ pub fn poll_proc<B>(
     let mut curr_active: ProcMap = HashMap::new();
 
     try_control!(callback(TraceEvent::TraceStart { time: time_start }));
-    try_control!(callback(TraceEvent::ProcessStart {
-        pid: root_pid,
-        time: 0.0
-    }));
-    prev_active.insert(root_pid, get_process_exec_info(root_pid));
 
     loop {
         let time_now = Instant::now();
@@ -96,6 +91,8 @@ fn poll_proc_all<B>(
     curr_active: &mut ProcMap,
     callback: &mut impl FnMut(TraceEvent) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
+    assert!(!curr_active.contains_key(&pid));
+
     // maybe report process start
     if !prev_active.contains_key(&pid) {
         callback(TraceEvent::ProcessStart { pid, time })?;
@@ -115,47 +112,48 @@ fn poll_proc_all<B>(
             argv: new_info.argv.clone(),
         })?;
     }
+
+    // record process as active
     curr_active.insert(pid, new_info);
-
-    // visit children
-    if let Ok(children) = std::fs::read_to_string(format!("/proc/{pid}/task/{pid}/children")) {
-        for child in children.split(" ") {
-            if child.is_empty() {
-                continue;
-            }
-            let child_pid = Pid::from_raw(child.parse::<i32>().unwrap());
-
-            // report child process
-            if !prev_active.contains_key(&child_pid) {
-                callback(TraceEvent::ProcessChild {
-                    parent: pid,
-                    child: child_pid,
-                    kind: ProcessKind::Process,
-                })?;
-            }
-
-            // recurse into child process
-            poll_proc_all(time, child_pid, &prev_active, curr_active, callback)?;
-        }
-    }
 
     // visit threads
     if let Ok(dirs) = std::fs::read_dir(format!("/proc/{pid}/task")) {
         for dir in dirs {
             if let Ok(dir) = dir {
                 let task_pid = Pid::from_raw(dir.file_name().to_str().unwrap().parse::<i32>().unwrap());
+
                 if task_pid != pid {
                     // report child thread
                     if !prev_active.contains_key(&task_pid) {
+                        callback(TraceEvent::ProcessStart { pid: task_pid, time })?;
                         callback(TraceEvent::ProcessChild {
                             parent: pid,
                             child: task_pid,
                             kind: ProcessKind::Thread,
                         })?;
                     }
+                }
 
-                    // recurse into threads
-                    poll_proc_all(time, task_pid, &prev_active, curr_active, callback)?;
+                // visit children
+                if let Ok(children) = std::fs::read_to_string(format!("/proc/{pid}/task/{task_pid}/children")) {
+                    for child in children.split(" ") {
+                        if child.is_empty() {
+                            continue;
+                        }
+                        let child_pid = Pid::from_raw(child.parse::<i32>().unwrap());
+
+                        // report child process
+                        if !prev_active.contains_key(&child_pid) {
+                            callback(TraceEvent::ProcessChild {
+                                parent: task_pid,
+                                child: child_pid,
+                                kind: ProcessKind::Process,
+                            })?;
+                        }
+
+                        // recurse into child process
+                        poll_proc_all(time, child_pid, &prev_active, curr_active, callback)?;
+                    }
                 }
             }
         }

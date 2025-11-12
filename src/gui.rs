@@ -2,9 +2,9 @@ use crate::layout::PlacedProcess;
 use crate::record::{Recording, TimeRange};
 use crate::swriteln;
 use crossbeam::channel::Sender;
+use eframe::Frame;
 use eframe::emath::{Pos2, Rect};
 use eframe::epaint::{Color32, CornerRadiusF32, FontId, Stroke, StrokeKind};
-use eframe::Frame;
 use egui::ecolor::Hsva;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
 use egui::style::ScrollAnimation;
@@ -73,7 +73,7 @@ impl App {
             color_settings: ColorSettings::new(),
             zoom_linear: Vec2::ZERO,
             zoom_auto_hor: true,
-            show_threads: true,
+            show_threads: false,
             selected_pid: None,
             hovered_pid: None,
         }

@@ -58,7 +58,7 @@ fn place_process(rec: &Recording, include_threads: bool, cache: &mut TimeCache, 
 
     // filter/flatten children
     let children = if include_threads {
-        Either::Left(info.children.iter().map(|&(_, c)| c))
+        Either::Left(info.children.iter().map(|(&c, _)| c))
     } else {
         let mut children = vec![];
         rec.for_each_process_child(pid, &mut |kind, child_pid| {
@@ -152,7 +152,7 @@ fn process_time_bound(rec: &Recording, cache: &mut TimeCache, pid: Pid) -> TimeR
                 end: Some(exec.time),
             });
         }
-        for &(_, c) in &info.children {
+        for (&c, _) in &info.children {
             join_range(process_time_bound(rec, cache, c));
         }
     }

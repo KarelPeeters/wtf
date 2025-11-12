@@ -235,6 +235,7 @@ impl App {
 
         // second pass: actually paint (and collect click events)
         let mut pointer_pid_info = None;
+        let stoken_width = 1.0;
 
         root_placed.visit(
             // before: draw background/header and handle interactions
@@ -262,8 +263,8 @@ impl App {
                 // figure out text, it influences the color
                 let text = proc.execs.last().map(|exec| exec.path.as_str()).unwrap_or("?");
                 let text = text.rsplit_once("/").map(|(_, s)| s).unwrap_or(text);
-                let colors = get_process_color(&self.color_settings, ui.visuals().dark_mode, text);
 
+                let colors = get_process_color(&self.color_settings, ui.visuals().dark_mode, text);
                 let stroke_color = if pointer_in_rect || self.selected_pid == Some(proc.pid) {
                     text_color
                 } else {
@@ -289,9 +290,11 @@ impl App {
                 // draw the text if it fits in the rectangle
                 if rect_header.width() >= text_min_char_width * (text.len() as f32) {
                     let galley = painter.layout_no_wrap(text.to_owned(), text_font.clone(), text_color);
-                    let rect_text = galley.rect.translate(rect_header.min.to_vec2());
+                    let rect_text = galley
+                        .rect
+                        .translate(rect_header.min.to_vec2() + Vec2::new(stoken_width * 2.0, 0.0));
                     if rect_header.contains_rect(rect_text) {
-                        painter.galley(rect_header.min, galley, text_color);
+                        painter.galley(rect_text.min, galley, text_color);
                     }
                 }
 
@@ -302,7 +305,7 @@ impl App {
                 painter.rect_stroke(
                     rect_full,
                     CornerRadiusF32::ZERO,
-                    Stroke::new(1.0, stroke_color),
+                    Stroke::new(stoken_width, stroke_color),
                     StrokeKind::Inside,
                 );
             },

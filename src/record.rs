@@ -1,4 +1,5 @@
 use crate::trace::TraceEvent;
+use crate::util::MapExt;
 use indexmap::IndexMap;
 use nix::unistd::Pid;
 use std::time::Instant;
@@ -20,7 +21,7 @@ pub struct ProcessInfo {
 
     pub execs: Vec<ProcessExec>,
     // note: children might be reported here before they actually exist as ProcessInfo entries
-    pub children: IndexMap<Pid, ProcessKind>,
+    pub children: Vec<(ProcessKind, Pid)>,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -68,12 +69,13 @@ impl Recording {
                 self.time_end = Some(time);
             }
             TraceEvent::ProcessStart { pid, time } => {
-                self.processes.entry(pid).or_insert_with(|| ProcessInfo {
+                let info = ProcessInfo {
                     pid,
                     time: TimeRange { start: time, end: None },
                     execs: Vec::new(),
-                    children: IndexMap::new(),
-                });
+                    children: Vec::new(),
+                };
+                self.processes.insert_first(pid, info);
 
                 if self.root_pid.is_none() {
                     self.root_pid = Some(pid);
@@ -83,12 +85,7 @@ impl Recording {
                 self.processes.get_mut(&pid).unwrap().time.end = Some(time);
             }
             TraceEvent::ProcessChild { parent, child, kind } => {
-                self.processes
-                    .get_mut(&parent)
-                    .unwrap()
-                    .children
-                    .entry(child)
-                    .or_insert(kind);
+                self.processes.get_mut(&parent).unwrap().children.push((kind, child));
             }
             TraceEvent::ProcessExec {
                 pid,
@@ -117,7 +114,7 @@ impl Recording {
 
     pub fn for_each_process_child(&self, start: Pid, f: &mut impl FnMut(ProcessKind, Pid)) {
         if let Some(info) = self.processes.get(&start) {
-            for (&child_pid, &child_kind) in &info.children {
+            for &(child_kind, child_pid) in &info.children {
                 // visit the child itself
                 f(child_kind, child_pid);
 

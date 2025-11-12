@@ -97,21 +97,16 @@ impl eframe::App for App {
                 ui.separator();
                 ui.heading("Colors");
                 ui.add(egui::Slider::new(&mut self.color_settings.hue_sat, 0.0..=1.0).text("Hue saturation"));
-                ui.add(
-                    egui::Slider::new(&mut self.color_settings.val_header_dark, 0.0..=1.0).text("Value Header (dark)"),
-                );
-                ui.add(
-                    egui::Slider::new(&mut self.color_settings.val_background_dark, 0.0..=1.0)
-                        .text("Value Background (dark)"),
-                );
-                ui.add(
-                    egui::Slider::new(&mut self.color_settings.val_header_light, 0.0..=1.0)
-                        .text("Value Header (light)"),
-                );
-                ui.add(
-                    egui::Slider::new(&mut self.color_settings.val_background_light, 0.0..=1.0)
-                        .text("Value Background (light)"),
-                );
+
+                let mut add_value_sliders = |kind: &str, values: &mut ColorValues| {
+                    ui.add(egui::Slider::new(&mut values.header, 0.0..=1.0).text(format!("{kind } value header")));
+                    ui.add(
+                        egui::Slider::new(&mut values.background, 0.0..=1.0).text(format!("{kind } value background")),
+                    );
+                    ui.add(egui::Slider::new(&mut values.stroke, 0.0..=1.0).text(format!("{kind } value stroke")));
+                };
+                add_value_sliders("Dark", &mut self.color_settings.val_dark);
+                add_value_sliders("Light", &mut self.color_settings.val_light);
 
                 ui.separator();
                 ui.heading("Process info");
@@ -269,11 +264,10 @@ impl App {
                 let text = text.rsplit_once("/").map(|(_, s)| s).unwrap_or(text);
                 let colors = get_process_color(&self.color_settings, ui.visuals().dark_mode, text);
 
-                // TODO separate stoke color, even more consisting than header itself
                 let stroke_color = if pointer_in_rect || self.selected_pid == Some(proc.pid) {
                     text_color
                 } else {
-                    colors.header
+                    colors.stroke
                 };
 
                 // draw rects
@@ -404,28 +398,39 @@ fn zoom_factor_to_linear(zoom_factor: f32) -> f32 {
     zoom_factor.ln() * ZOOM_MULTIPLIER
 }
 
-struct ColorSettings {
-    hue_sat: f32,
-
-    val_header_dark: f32,
-    val_background_dark: f32,
-    val_header_light: f32,
-    val_background_light: f32,
-}
-
 struct ProcessColors {
     header: Color32,
     background: Color32,
+    stroke: Color32,
+}
+
+struct ColorSettings {
+    hue_sat: f32,
+    val_dark: ColorValues,
+    val_light: ColorValues,
+}
+
+#[derive(Debug, Copy, Clone)]
+struct ColorValues {
+    header: f32,
+    background: f32,
+    stroke: f32,
 }
 
 impl ColorSettings {
     fn new() -> Self {
         Self {
             hue_sat: 0.8,
-            val_header_dark: 0.08,
-            val_background_dark: 0.03,
-            val_header_light: 0.6,
-            val_background_light: 0.75,
+            val_dark: ColorValues {
+                header: 0.08,
+                background: 0.03,
+                stroke: 0.17,
+            },
+            val_light: ColorValues {
+                header: 0.8,
+                background: 0.9,
+                stroke: 0.4,
+            },
         }
     }
 }
@@ -436,15 +441,16 @@ fn get_process_color(settings: &ColorSettings, dark_mode: bool, name: &str) -> P
         None => (0.0, 0.0),
     };
 
-    let (val_header, val_background) = if dark_mode {
-        (settings.val_header_dark, settings.val_background_dark)
+    let val = if dark_mode {
+        settings.val_dark
     } else {
-        (settings.val_header_light, settings.val_background_light)
+        settings.val_light
     };
 
     ProcessColors {
-        header: Color32::from(Hsva::new(hue, sat, val_header, 1.0)),
-        background: Color32::from(Hsva::new(hue, sat, val_background, 1.0)),
+        header: Color32::from(Hsva::new(hue, sat, val.header, 1.0)),
+        background: Color32::from(Hsva::new(hue, sat, val.background, 1.0)),
+        stroke: Color32::from(Hsva::new(hue, sat, val.stroke, 1.0)),
     }
 }
 

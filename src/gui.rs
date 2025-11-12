@@ -11,6 +11,7 @@ use egui::{CentralPanel, Context, Key, PointerButton, ScrollArea, Sense, SidePan
 use egui_theme_switch::global_theme_switch;
 use itertools::enumerate;
 use nix::unistd::Pid;
+use std::ops::ControlFlow;
 use std::sync::{Arc, Mutex};
 
 pub struct GuiHandle {
@@ -218,7 +219,7 @@ impl App {
         let rect_params = ProcRectParams::new(time_now, self.zoom_linear);
         let mut bounding_box = Rect::NOTHING;
         root_placed.visit(
-            |_, _| {},
+            |_, _| ControlFlow::Continue(()),
             |placed, row, ()| {
                 let proc_rect = rect_params.proc_rect(placed.time_bound, row, placed.row_height);
                 bounding_box |= proc_rect;
@@ -250,7 +251,7 @@ impl App {
                     .proc_rect(placed.time_bound, row, placed.row_height)
                     .translate(offset);
                 if !ui.is_rect_visible(rect_full) {
-                    return None;
+                    return ControlFlow::Break(());
                 }
                 let rect_header = rect_params.proc_rect(proc.time, row, 1).translate(offset);
 
@@ -300,18 +301,16 @@ impl App {
                     }
                 }
 
-                Some((rect_full, stroke_color))
+                ControlFlow::Continue((rect_full, stroke_color))
             },
             // after: draw background stroke, on top of any children
-            |_, _, info| {
-                if let Some((rect_full, stroke_color)) = info {
-                    painter.rect_stroke(
-                        rect_full,
-                        CornerRadiusF32::ZERO,
-                        Stroke::new(1.0, stroke_color),
-                        StrokeKind::Inside,
-                    );
-                }
+            |_, _, (rect_full, stroke_color)| {
+                painter.rect_stroke(
+                    rect_full,
+                    CornerRadiusF32::ZERO,
+                    Stroke::new(1.0, stroke_color),
+                    StrokeKind::Inside,
+                );
             },
         );
 

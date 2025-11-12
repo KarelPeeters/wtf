@@ -5,7 +5,7 @@ use itertools::{Either, Itertools};
 use nix::unistd::Pid;
 use ordered_float::OrderedFloat;
 use std::cmp::min;
-use std::ops::Range;
+use std::ops::{ControlFlow, Range};
 
 pub struct PlacedProcess {
     pub pid: Pid,
@@ -28,17 +28,20 @@ pub fn place_processes(rec: &Recording, include_threads: bool) -> Option<PlacedP
 impl PlacedProcess {
     pub fn visit<R>(
         &self,
-        mut f_before: impl FnMut(&PlacedProcess, usize) -> R,
+        mut f_before: impl FnMut(&PlacedProcess, usize) -> ControlFlow<(), R>,
         mut f_after: impl FnMut(&PlacedProcess, usize, R),
     ) {
         fn visit_impl<R>(
             slf: &PlacedProcess,
             offset_start: usize,
-            f_before: &mut impl FnMut(&PlacedProcess, usize) -> R,
+            f_before: &mut impl FnMut(&PlacedProcess, usize) -> ControlFlow<(), R>,
             f_after: &mut impl FnMut(&PlacedProcess, usize, R),
         ) {
             let offset = offset_start + slf.row_offset;
-            let r = f_before(slf, offset);
+            let r = match f_before(slf, offset) {
+                ControlFlow::Continue(r) => r,
+                ControlFlow::Break(()) => return,
+            };
             for child in &slf.children {
                 visit_impl(child, offset, f_before, f_after);
             }

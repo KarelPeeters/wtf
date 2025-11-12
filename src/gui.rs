@@ -7,6 +7,7 @@ use eframe::epaint::{Color32, CornerRadiusF32, FontId, Stroke, StrokeKind};
 use eframe::Frame;
 use egui::ecolor::Hsva;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
+use egui::style::ScrollAnimation;
 use egui::{CentralPanel, Context, Key, PointerButton, ScrollArea, Sense, SidePanel, Vec2};
 use egui_theme_switch::global_theme_switch;
 use itertools::enumerate;
@@ -159,18 +160,44 @@ impl eframe::App for App {
 
                     // handle zoom events
                     // TODO can/should we move this earlier?
-                    // TODO keep mouse position stable when zooming
-                    if ui.is_enabled() && ui.rect_contains_pointer(ui.min_rect()) {
-                        let (delta_raw, mod_ctrl, key_a) = ui
-                            .input(|input| (input.raw_scroll_delta, input.modifiers.ctrl, input.key_released(Key::A)));
+                    if ui.is_enabled() && ui.ui_contains_pointer() {
+                        let (pointer_pos, raw_scroll_delta, mod_ctrl, key_a) = ui.input(|input| {
+                            (
+                                input.pointer.interact_pos(),
+                                input.raw_scroll_delta,
+                                input.modifiers.ctrl,
+                                input.key_released(Key::A),
+                            )
+                        });
 
-                        let delta = if mod_ctrl { delta_raw.yx() } else { delta_raw };
-                        self.zoom_linear += delta.yx();
+                        // manual zoom
+                        let scroll_delta = if mod_ctrl {
+                            raw_scroll_delta.yx()
+                        } else {
+                            raw_scroll_delta
+                        };
+                        let zoom_linear_before = self.zoom_linear.x;
+                        self.zoom_linear += scroll_delta.yx();
 
-                        if delta != Vec2::ZERO {
-                            self.zoom_auto_hor = false;
+                        // pan to keep cursor centered
+                        // (using some empirical formulas, reasoning about zoom/pan is hard)
+                        if let Some(pointer_pos) = pointer_pos {
+                            let zoom_factor_before = zoom_linear_to_factor(zoom_linear_before);
+                            let zoom_factor_after = zoom_linear_to_factor(self.zoom_linear.x);
+
+                            let p_delta = (pointer_pos - ui.min_rect().min).x;
+                            let p_delta_before = p_delta / zoom_factor_before;
+                            let p_delta_after = p_delta / zoom_factor_after;
+
+                            let scroll_delta = Vec2::new((p_delta_after - p_delta_before) * zoom_factor_after, 0.0);
+                            // TODO fix the flicker this is causing
+                            ui.scroll_with_delta_animation(scroll_delta, ScrollAnimation::none());
                         }
 
+                        // enable/disable autozoom
+                        if scroll_delta != Vec2::ZERO {
+                            self.zoom_auto_hor = false;
+                        }
                         if key_a {
                             self.zoom_auto_hor = true;
                         }
@@ -370,6 +397,10 @@ struct ProcRectParams {
     zoom_factor: Vec2,
 }
 
+const ZOOM_MULTIPLIER_HOR: f32 = 200.0;
+const ZOOM_MULTIPLIER_VER: f32 = 20.0;
+const ZOOM_MULTIPLIER_EXP: f32 = 50.0;
+
 impl ProcRectParams {
     pub fn new(time_now: f32, zoom_linear: Vec2) -> Self {
         let zoom_factor = Vec2::new(
@@ -381,8 +412,8 @@ impl ProcRectParams {
 
     pub fn proc_rect(&self, time: TimeRange, row: usize, height: usize) -> Rect {
         let time_end = time.end.unwrap_or(self.time_now);
-        let w = 200.0 * self.zoom_factor.x;
-        let h = 20.0 * self.zoom_factor.y;
+        let w = ZOOM_MULTIPLIER_HOR * self.zoom_factor.x;
+        let h = ZOOM_MULTIPLIER_VER * self.zoom_factor.y;
 
         Rect {
             min: Pos2::new(w * time.start, h * (row as f32)),
@@ -391,14 +422,12 @@ impl ProcRectParams {
     }
 }
 
-const ZOOM_MULTIPLIER: f32 = 50.0;
-
 fn zoom_linear_to_factor(zoom_linear: f32) -> f32 {
-    (zoom_linear / ZOOM_MULTIPLIER).exp()
+    (zoom_linear / ZOOM_MULTIPLIER_EXP).exp()
 }
 
 fn zoom_factor_to_linear(zoom_factor: f32) -> f32 {
-    zoom_factor.ln() * ZOOM_MULTIPLIER
+    zoom_factor.ln() * ZOOM_MULTIPLIER_EXP
 }
 
 struct ProcessColors {

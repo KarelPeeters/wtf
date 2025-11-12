@@ -55,6 +55,9 @@ pub fn poll_proc<B>(
 
         // check if the child is done
         if let Some(status) = root_handle.try_wait()? {
+            for &pid in prev_active.keys() {
+                try_control!(callback(TraceEvent::ProcessExit { pid, time: time_now_f }));
+            }
             try_control!(callback(TraceEvent::TraceEnd { time: time_now_f }));
             return Ok(ControlFlow::Continue(status));
         }
@@ -100,7 +103,10 @@ fn poll_proc_all<B>(
 
     // maybe report process exec change
     let new_info = get_process_exec_info(pid);
-    if prev_active.get(&pid).map_or(true, |info| info != &new_info) {
+    if prev_active
+        .get(&pid)
+        .map_or(true, |info| &info.path != &new_info.path || info.argv != new_info.argv)
+    {
         callback(TraceEvent::ProcessExec {
             pid,
             time,
@@ -158,7 +164,7 @@ fn poll_proc_all<B>(
     ControlFlow::Continue(())
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 struct ProcessExecInfo {
     cwd: Option<String>,
     path: String,

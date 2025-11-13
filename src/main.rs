@@ -7,23 +7,26 @@ use std::ffi::{CString, OsString};
 use std::ops::ControlFlow;
 use std::os::unix::ffi::OsStrExt;
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
-use wtf::gui::{DataToGui, GuiHandle, main_gui};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use wtf::gui::{main_gui, DataToGui, GuiHandle};
 use wtf::layout::place_processes;
 use wtf::poll::poll_proc;
 use wtf::record::Recording;
-use wtf::trace::{TraceEvent, record_trace};
+use wtf::trace::{record_trace, TraceEvent};
 
 #[derive(Debug, Parser)]
 struct Args {
-    #[arg(long)]
     /// Use ptrace instead of polling for tracing.
+    #[arg(long)]
     ptrace: bool,
-    #[arg(long, default_value_t = 60.0)]
     /// The polling frequency in Hz. Only used when polling, the default if `--poll` is not specified.
+    #[arg(long, default_value_t = 60.0)]
     poll_freq: f32,
+    /// The layout frequency in Hz.
+    #[arg(long, default_value_t = 10.0)]
+    layout_freq: f32,
 
     #[arg(trailing_var_arg = true, required = true, num_args = 1..)]
     command: Vec<OsString>,
@@ -33,6 +36,9 @@ fn main() -> ExitCode {
     // parse args
     let args = Args::parse();
     assert!(!args.command.is_empty());
+
+    let args_poll_period = Duration::from_secs_f32(1.0 / args.poll_freq);
+    let args_layout_period = Duration::from_secs_f32(1.0 / args.layout_freq);
 
     // create shared state and channels
     let stopped = Arc::new(AtomicBool::new(false));
@@ -73,12 +79,7 @@ fn main() -> ExitCode {
             })
         } else {
             std::thread::spawn(move || {
-                let poll_result = poll_proc(
-                    &args.command[0],
-                    &args.command,
-                    Duration::from_secs_f32(1.0 / args.poll_freq),
-                    callback,
-                );
+                let poll_result = poll_proc(&args.command[0], &args.command, args_poll_period, callback);
                 if let Err(e) = &poll_result {
                     eprintln!("Failed to spawn child process: {}", e);
                 }
@@ -89,7 +90,7 @@ fn main() -> ExitCode {
     // spawn collector thread
     let handle_collector = {
         let stopped = stopped.clone();
-        std::thread::spawn(move || thread_collector(stopped, event_rx, gui_handle_rx))
+        std::thread::spawn(move || thread_collector(stopped, event_rx, gui_handle_rx, args_layout_period))
     };
 
     // start gui (egui wants this to be on the main thread)
@@ -102,7 +103,12 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn thread_collector(stopped: Arc<AtomicBool>, event_rx: Receiver<TraceEvent>, gui_handle_rx: Receiver<GuiHandle>) {
+fn thread_collector(
+    stopped: Arc<AtomicBool>,
+    event_rx: Receiver<TraceEvent>,
+    gui_handle_rx: Receiver<GuiHandle>,
+    period: Duration,
+) {
     let gui_handle = match gui_handle_rx.recv() {
         Ok(handle) => handle,
         Err(RecvError) => return,
@@ -110,6 +116,8 @@ fn thread_collector(stopped: Arc<AtomicBool>, event_rx: Receiver<TraceEvent>, gu
     drop(gui_handle_rx);
 
     let mut recording = Recording::new();
+
+    let mut prev = Instant::now();
 
     loop {
         if stopped.load(Ordering::Relaxed) {
@@ -149,5 +157,10 @@ fn thread_collector(stopped: Arc<AtomicBool>, event_rx: Receiver<TraceEvent>, gu
         if disconnected {
             break;
         }
+
+        if let Some(remaining) = period.checked_sub(prev.elapsed()) {
+            std::thread::sleep(remaining);
+        }
+        prev = Instant::now();
     }
 }

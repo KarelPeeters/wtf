@@ -26,7 +26,7 @@ type ProcMap = HashMap<Pid, Option<ProcessExecInfo>>;
 pub fn poll_proc<B>(
     child_path: &OsStr,
     child_argv: &[OsString],
-    step: Duration,
+    period: Duration,
     mut callback: impl FnMut(TraceEvent) -> ControlFlow<B>,
 ) -> io::Result<ControlFlow<B, ExitStatus>> {
     // build root command
@@ -82,7 +82,7 @@ pub fn poll_proc<B>(
         curr_active.clear();
 
         // wait for leftover time if any
-        let time_left = step.checked_sub(time_now.elapsed());
+        let time_left = period.checked_sub(time_now.elapsed());
         if let Some(time_left) = time_left {
             std::thread::sleep(time_left);
         }

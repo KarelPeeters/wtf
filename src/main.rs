@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use wtf::gui::{main_gui, DataToGui, GuiHandle};
 use wtf::layout::place_processes;
-use wtf::poll::poll_proc;
+use wtf::poll::record_poll;
 use wtf::record::Recording;
 use wtf::trace::{record_trace, TraceEvent};
 
@@ -79,7 +79,7 @@ fn main() -> ExitCode {
             })
         } else {
             std::thread::spawn(move || {
-                let poll_result = poll_proc(&args.command[0], &args.command, args_poll_period, callback);
+                let poll_result = record_poll(&args.command[0], &args.command, args_poll_period, callback);
                 if let Err(e) = &poll_result {
                     eprintln!("Failed to spawn child process: {}", e);
                 }

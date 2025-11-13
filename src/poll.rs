@@ -23,7 +23,7 @@ macro_rules! try_control {
 type ProcSet = HashSet<Pid>;
 type ProcMap = HashMap<Pid, Option<ProcessExecInfo>>;
 
-pub fn poll_proc<B>(
+pub fn record_poll<B>(
     child_path: &OsStr,
     child_argv: &[OsString],
     period: Duration,

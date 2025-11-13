@@ -8,7 +8,7 @@ use std::io;
 use std::ops::ControlFlow;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
-use std::process::{Command, ExitStatus};
+use std::process::{Child, Command, ExitStatus};
 use std::time::{Duration, Instant};
 
 macro_rules! try_control {
@@ -23,6 +23,16 @@ macro_rules! try_control {
 type ProcSet = HashSet<Pid>;
 type ProcMap = HashMap<Pid, Option<ProcessExecInfo>>;
 
+struct KillOnDrop(Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let pid = Pid::from_raw(self.0.id() as i32);
+        let _ = nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGKILL);
+        let _ = self.0.kill();
+    }
+}
+
 pub fn record_poll<B>(
     child_path: &OsStr,
     child_argv: &[OsString],
@@ -35,11 +45,18 @@ pub fn record_poll<B>(
         cmd.arg0(child_argv_0);
         cmd.args(child_argv_rest);
     };
+    unsafe {
+        // set process group so we can kill all children later
+        cmd.pre_exec(|| {
+            nix::unistd::setpgid(Pid::from_raw(0), Pid::from_raw(0)).map_err(|e| io::Error::from_raw_os_error(e as i32))
+        });
+    }
 
     // start root process
     let time_start = Instant::now();
-    let mut root_handle = cmd.spawn()?;
+    let root_handle = cmd.spawn()?;
     let root_pid = Pid::from_raw(root_handle.id() as i32);
+    let mut root_handle = KillOnDrop(root_handle);
 
     let mut ever_active: HashMap<Pid, Option<ProcessExecInfo>> = HashMap::new();
     let mut prev_active: ProcSet = HashSet::new();
@@ -54,7 +71,7 @@ pub fn record_poll<B>(
         try_control!(callback(TraceEvent::None));
 
         // check if the child is done
-        if let Some(status) = root_handle.try_wait()? {
+        if let Some(status) = root_handle.0.try_wait()? {
             for &pid in &prev_active {
                 try_control!(callback(TraceEvent::ProcessExit { pid, time: time_now_f }));
             }

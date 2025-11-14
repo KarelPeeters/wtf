@@ -2,9 +2,9 @@ use crate::layout::PlacedProcess;
 use crate::record::{Recording, TimeRange};
 use crate::swriteln;
 use crossbeam::channel::Sender;
-use eframe::Frame;
 use eframe::emath::{Pos2, Rect};
 use eframe::epaint::{Color32, CornerRadiusF32, FontId, Stroke, StrokeKind};
+use eframe::Frame;
 use egui::ecolor::Hsva;
 use egui::scroll_area::{ScrollBarVisibility, ScrollSource};
 use egui::style::ScrollAnimation;
@@ -30,7 +30,9 @@ pub struct DataToGui {
 pub fn main_gui(channel: Sender<GuiHandle>) -> eframe::Result<()> {
     // TODO add icon
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_inner_size([400.0, 300.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([400.0, 300.0])
+            .with_maximized(true),
         ..Default::default()
     };
     eframe::run_native(

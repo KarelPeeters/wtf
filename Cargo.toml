@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.5.51", features = ["derive"] }
 crossbeam = "0.8.4"
-eframe = { version = "0.33.0", default-features = false, features = ["wayland", "glow"] }
+eframe = { version = "0.33.0" }
 egui-theme-switch = "0.5.0"
 indexmap = "2.12.0"
 itertools = "0.14.0"

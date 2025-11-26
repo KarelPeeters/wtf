@@ -28,8 +28,7 @@ struct KillOnDrop(Child);
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
         let pid = Pid::from_raw(self.0.id() as i32);
-        let _ = nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGKILL);
-        let _ = self.0.kill();
+        let _ = nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGINT);
     }
 }
 
